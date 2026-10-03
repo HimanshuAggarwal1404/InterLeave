@@ -129,3 +129,28 @@ Alternatives: github.com/<username>/racehound (ties the project to a GitHub acco
 the project is published).
 Consequences: Builds and tests work the same. When publishing, rename the module path in go.mod
 and imports (one find-and-replace) so others can `go install` it.
+
+## D-012: Proxy listens on localhost only; upstream must be loopback
+Status: Proposed      Date: 2026-10-04
+Context: SPEC section 3 showed `--listen :6433`. In Go, `:6433` binds every network interface, so
+anyone on the same Wi-Fi could reach the local Postgres through the proxy, and Postgres would
+see them as connecting from localhost (often trusted more in pg_hba.conf).
+Decision: Default `--listen localhost:6433`. `proxy.New` refuses any upstream whose host is not
+`localhost`, `127.0.0.1` or `::1` (port stays configurable so tests can use a fake server).
+Alternatives: `:6433` as in the SPEC (reachable from the LAN); also forcing `--listen` to loopback
+(stricter, but the default already covers the normal case; the Phase 5 Docker demo may need
+other interfaces).
+Consequences: Safe by default, and the "never a remote database" rule is enforced in code, not
+just in docs. SPEC section 3 updated to match.
+
+## D-013: pgwire reads from io.Reader without a context; cancel by closing the connection
+Status: Proposed      Date: 2026-10-04
+Context: the project's Go style rule says blocking I/O functions take a `context.Context`, but an
+`io.Reader` cannot be interrupted by a context: a blocked `Read` ignores it.
+Decision: `pgwire.ReadMessage(r)` / `ReadStartup(r)` take only an `io.Reader`. Cancellation lives
+in the proxy: `context.AfterFunc(ctx, conn.Close)` closes the connection, which makes any blocked
+read return an error at once. Messages keep `Raw` so the proxy forwards bytes without re-encoding.
+Alternatives: a ctx parameter that is ignored (misleading); per-read deadlines from the ctx
+(more code, same effect).
+Consequences: `pgwire` stays pure and easy to unit-test with `bytes.Reader`; the proxy is the
+single place that decides when connections close.

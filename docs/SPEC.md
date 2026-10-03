@@ -22,7 +22,7 @@ violation, and prints a minimal-enough failing timeline that can be replayed det
 ```
 racehound run <scenario.yaml> [--strategy exhaustive|random] [--max-runs N] [--seed S]
 racehound replay <schedule.json> [--step]
-racehound proxy [--listen :6433] [--upstream localhost:5432]   # pass-through only, for debugging
+racehound proxy [--listen localhost:6433] [--upstream localhost:5432]   # pass-through only, for debugging (D-012)
 ```
 
 Exit codes: `0` no violation found, `1` violation found, `2` usage or configuration error,
