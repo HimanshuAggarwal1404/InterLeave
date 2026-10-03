@@ -3,6 +3,23 @@
 This is the plain-language "why and what" of the project. For exact requirements see
 `SPEC.md`; for how it is built see `ARCHITECTURE.md`.
 
+## What RaceHound is and is not
+
+- **A testing tool, not part of the app.** Run from the terminal like `go test`. No website or dashboard.
+- **The crash-test lab, not the seatbelt.** It finds races in the app's own rules (Postgres is
+  assumed correct) and proves whether a fix holds. It never fixes the app: `FOR UPDATE`, unique
+  constraints, conditional updates and SERIALIZABLE + retry are the developer's job.
+- **Controlled, not blasted.** It fires 2-3 requests at once, holds every SQL statement at a red
+  light in its proxy, and tries every order (DFS + replay), resetting the DB before and checking
+  invariants after each. Result: "safe in all N orders" or "this exact order breaks rule X", replayable.
+- **Needed even though locks exist**, because locks get misused in ways tests and review miss:
+  (1) `FOR UPDATE` without `BEGIN`, (2) locking the wrong row, (3) nothing to lock yet (needs a
+  unique constraint), (4) one endpoint locks, another doesn't, (5) the fix adds a deadlock. With a
+  correct fix it sees the second request wait on the lock, lets the first finish, and confirms the
+  rules hold in every order. That before/after proof is the product.
+- **Input:** a scenario YAML with reset SQL, concurrent requests, and invariant SQL. Phase 3 adds an
+  invariant-free mode: compare against one-after-another runs.
+
 ## The problem
 
 A shop app has a coupon `DIWALI50` that can be used once. The redeem code does:
