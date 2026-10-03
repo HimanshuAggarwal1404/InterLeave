@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:17
+    container_name: racehound-db
+    environment:
+      POSTGRES_USER: racehound
+      POSTGRES_PASSWORD: racehound
+      POSTGRES_DB: racehound
+    ports:
+      - "127.0.0.1:5432:5432"   # bind to localhost only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U racehound -d racehound"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    # No volume on purpose: the database is disposable and resets on `docker compose down`.

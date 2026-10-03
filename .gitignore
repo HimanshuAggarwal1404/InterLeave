@@ -1,0 +1,17 @@
+# Build output
+/bin/
+/racehound
+*.exe
+
+# RaceHound run artifacts (schedules, reports)
+/.racehound/
+
+# Go
+*.test
+*.out
+coverage.*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
