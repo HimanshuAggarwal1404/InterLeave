@@ -22,7 +22,7 @@ violation, and prints a minimal-enough failing timeline that can be replayed det
 ```
 racehound run <scenario.yaml> [--strategy exhaustive|random] [--max-runs N] [--seed S]
 racehound replay <schedule.json> [--step]
-racehound proxy [--listen localhost:6433] [--upstream localhost:5432]   # pass-through only, for debugging (D-012)
+racehound proxy [--listen localhost:6433] [--upstream localhost:5432] [--verbose]   # pass-through only, for debugging (D-012); --verbose logs queries + tags
 ```
 
 Exit codes: `0` no violation found, `1` violation found, `2` usage or configuration error,
@@ -68,8 +68,11 @@ invariants:                             # each must return a single boolean true
 
 **Request attribution**
 - FR-7: The harness sends each request with header `X-RaceHound-Req: A|B|...`. Victim apps prefix
-  every query with the SQL comment `/* rh:req=A */`. The proxy reads the tag from the comment.
-- FR-8: Statements with no tag pass through immediately and are not scheduled (pool health checks etc.).
+  every query with the SQL comment `/* rh:req=A */`. The proxy reads the tag from the comment,
+  only at the very start of the query; a tag is 1-64 of `A-Z a-z 0-9 _ -` (D-015). Victims
+  reject any other header value with 400, since the tag is pasted into SQL.
+- FR-8: Statements with no tag pass through immediately and are not scheduled (pool health checks
+  such as pgx's `-- ping`, and pgx's `rollback`, which cannot be tagged; D-016).
 
 **Scheduler**
 - FR-9: Each tagged statement is parked until the scheduler releases it.

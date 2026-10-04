@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 
 	"racehound/internal/proxy"
 )
@@ -22,8 +23,9 @@ const (
 )
 
 const usage = `usage:
-  racehound proxy [--listen localhost:6433] [--upstream localhost:5432]
-      pass-through proxy, for debugging (Ctrl+C to stop)`
+  racehound proxy [--listen localhost:6433] [--upstream localhost:5432] [--verbose]
+      pass-through proxy, for debugging (Ctrl+C to stop); --verbose logs
+      every query with its request tag`
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -48,6 +50,7 @@ func runProxy(args []string) int {
 	fs := flag.NewFlagSet("proxy", flag.ContinueOnError)
 	listen := fs.String("listen", "localhost:6433", "address apps connect to (localhost only by default)")
 	upstream := fs.String("upstream", "localhost:5432", "the local Postgres to forward to")
+	verbose := fs.Bool("verbose", false, "log every query the app sends, with its request tag")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK
@@ -59,6 +62,9 @@ func runProxy(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitUsage
+	}
+	if *verbose {
+		p.OnQuery = func(tag, sql string) { log.Print(queryLogLine(tag, sql)) }
 	}
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -76,4 +82,13 @@ func runProxy(args []string) int {
 	}
 	log.Print("racehound proxy: stopped")
 	return exitOK
+}
+
+// queryLogLine formats one query for --verbose: its tag ("-" if untagged)
+// and its SQL on one line.
+func queryLogLine(tag, sql string) string {
+	if tag == "" {
+		tag = "-"
+	}
+	return fmt.Sprintf("query [%s] %s", tag, strings.Join(strings.Fields(sql), " "))
 }

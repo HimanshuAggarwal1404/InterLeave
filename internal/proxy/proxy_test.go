@@ -94,6 +94,65 @@ func TestPassThroughFakeUpstream(t *testing.T) {
 	expectEOF(t, server)
 }
 
+// OnQuery sees every Query with its request tag, before the query is
+// forwarded, and the query still reaches Postgres byte for byte.
+func TestOnQueryReportsTags(t *testing.T) {
+	type seen struct{ tag, sql string }
+	queries := make(chan seen, 10)
+	upstreamAddr, accepted := fakeUpstream(t)
+	p, err := New(upstreamAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.OnQuery = func(tag, sql string) { queries <- seen{tag, sql} }
+	client := dial(t, serveProxy(t, p))
+
+	write(t, client, startupMsg)
+	server := acceptOne(t, accepted)
+	if _, err := pgwire.ReadStartup(server); err != nil {
+		t.Fatalf("upstream reading startup: %v", err)
+	}
+	write(t, server, authOKReady)
+	expectBytes(t, client, authOKReady)
+
+	tests := []struct {
+		raw  []byte
+		want seen
+	}{
+		{queryMsg("/* rh:req=A */ SELECT 1"), seen{"A", "/* rh:req=A */ SELECT 1"}},
+		{query, seen{"", "SELECT 1"}},
+		// A broken tag is logged and treated as untagged; the query still goes through.
+		{queryMsg("/* rh:req=A;B */ SELECT 1"), seen{"", "/* rh:req=A;B */ SELECT 1"}},
+	}
+	for _, tt := range tests {
+		write(t, client, tt.raw)
+		expectBytes(t, server, tt.raw)
+		select {
+		case got := <-queries:
+			if got != tt.want {
+				t.Errorf("OnQuery got %+v, want %+v", got, tt.want)
+			}
+		default:
+			t.Errorf("OnQuery was not called before %q was forwarded", tt.want.sql)
+		}
+	}
+
+	// Other messages (here Terminate) are not queries.
+	write(t, client, terminate)
+	expectBytes(t, server, terminate)
+	select {
+	case got := <-queries:
+		t.Errorf("OnQuery called for a non-Query message: %+v", got)
+	default:
+	}
+}
+
+// queryMsg builds a 'Q' Query message: type, length (4 + text + NUL), text, NUL.
+func queryMsg(sql string) []byte {
+	n := 4 + len(sql) + 1
+	return append([]byte{'Q', byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)}, sql+"\x00"...)
+}
+
 // If Postgres hangs up (e.g. it was restarted), the app's connection must close too.
 func TestUpstreamCloseClosesClient(t *testing.T) {
 	upstreamAddr, accepted := fakeUpstream(t)
@@ -244,6 +303,12 @@ func startProxy(t *testing.T, upstream string) string {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	return serveProxy(t, p)
+}
+
+// serveProxy is startProxy for a proxy the test has already configured.
+func serveProxy(t *testing.T, p *Proxy) string {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

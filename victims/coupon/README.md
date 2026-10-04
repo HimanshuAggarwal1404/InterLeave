@@ -43,4 +43,9 @@ Without `--dsn` the app connects through RaceHound's proxy on port 6433.
 Phase 0 exit test (blasts 50 concurrent redeems directly at Postgres):
 `go test ./victims/coupon -run TestRaceIsReal -v`
 
-Still to come: request tags from `X-RaceHound-Req` and `--fixed` (Phase 1), `scenario.yaml` (Phase 2).
+Request tags: send `-H "X-RaceHound-Req: A"` and every statement, including `BEGIN`/`COMMIT`, starts
+with `/* rh:req=A */` (pgx's `rollback` cannot be tagged). Other header values get 400, because the
+tag is pasted into SQL. Without the header nothing is tagged.
+`TestQueriesCarryRequestTag` checks this through a real proxy.
+
+Still to come: `--fixed` (Phase 1), `scenario.yaml` (Phase 2).

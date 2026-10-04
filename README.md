@@ -44,12 +44,14 @@ replay that order on demand. Instead of hoping to get unlucky, it tries every or
 | 4 | `pgwire` (Phase 1, step 1) | Code that cuts the raw bytes between an app and Postgres into individual messages | `internal/pgwire/` |
 | 5 | Pass-through proxy (Phase 1, step 2) | Sits between the app and Postgres and forwards every message unchanged | `internal/proxy/` |
 | 6 | `racehound proxy` command | Runs the proxy from the terminal on port 6433 | `cmd/racehound/` |
-| 7 | Project docs | Spec, architecture, roadmap, decisions, overview, results | `docs/` |
+| 7 | Overhead benchmark | Measures requests/sec with and without the proxy (results in `docs/RESULTS.md`) | `cmd/bench/` |
+| 8 | Request tags (Phase 1, step 3) | Each statement says which HTTP request it belongs to; the proxy reads it | `internal/proxy/tag.go`, `victims/coupon/` |
+| 9 | Project docs | Spec, architecture, roadmap, decisions, overview, results | `docs/` |
 
 The order-trying engine (scheduler, explorer, invariant checker) does not exist yet. So far we
 have the **test subject** (the buggy app), **proof the bug is real**, and the **proxy** that
-the engine will be built into. It currently passes everything straight through, without
-holding anything back.
+the engine will be built into. The proxy already knows which request each statement belongs to,
+but it still passes everything straight through, without holding anything back.
 
 ### 2. The coupon victim app (`victims/coupon/`)
 
@@ -211,7 +213,7 @@ is left running. The tests check this.
   network interface", which would let anyone on your Wi-Fi reach your Postgres through the
   proxy. Postgres would also see those connections as coming from localhost.
 
-**How it is tested** (`internal/proxy/proxy_test.go`, 7 tests; `forward_test.go`, 2 tests):
+**How it is tested** (`internal/proxy/proxy_test.go`, 8 tests; `forward_test.go`, 3 tests):
 - With a **fake Postgres** (a socket the test controls): SSL gets `N`; the startup, the
   server's replies, a query and the goodbye are each forwarded byte for byte; if Postgres hangs
   up, the app's connection closes; a CancelRequest is forwarded; an unreachable Postgres
@@ -220,13 +222,40 @@ is left running. The tests check this.
   queries at once over 5 connections and does a transaction. It does this twice: once with
   `sslmode=disable` and once with `sslmode=prefer` (which sends the SSL request).
 - `forward` on its own: a burst of messages leaves in one write, and a complete message is
-  sent at once even when only half of the next one has arrived.
+  sent at once even when only half of the next one has arrived, and anything held back is sent
+  before the `OnQuery` hook sees the next message (the hook may block once the scheduler exists).
 - All of it passes 20 times in a row under `go test -race`.
 
-**The command** (`cmd/racehound/main.go`): `racehound proxy [--listen ...] [--upstream ...]`.
+**The command** (`cmd/racehound/main.go`): `racehound proxy [--listen ...] [--upstream ...] [--verbose]`
+(`--verbose` logs every query with its request tag, see Step 7).
 Exit code 2 means you gave it bad input (unknown command, remote upstream, port in use), 3 an
 internal error. `signal.NotifyContext` turns Ctrl+C into a cancelled `context`, which triggers
 the clean shutdown described above.
+
+### 6. Request tags (`internal/proxy/tag.go`, `victims/coupon/`)
+
+To control the order of statements, RaceHound must know **which HTTP request each statement
+belongs to**. The connection does not tell us: a pool hands the same connection to different
+requests (D-004). So the requests carry a name:
+
+1. RaceHound sends each request with a header, e.g. `X-RaceHound-Req: A`.
+2. The app puts that name in a SQL comment at the start of every statement:
+   `/* rh:req=A */ SELECT uses, max_uses FROM coupons ...`. Postgres ignores comments.
+3. The proxy reads the comment (`requestTag`) and reports `(tag, sql)` through its `OnQuery`
+   hook. The scheduler will plug in there to hold statements.
+
+Rules (D-015, D-016):
+- The tag counts **only at the very start** of the query, so text inside a value (say a user
+  name `'/* rh:req=A */'`) cannot pretend to be a tag.
+- A tag is 1-64 of `A-Z a-z 0-9 _ -`. The app **rejects any other header with 400**: the header
+  is pasted into SQL, so `A */ DROP TABLE coupons; --` would otherwise be SQL injection.
+- The coupon app tags `BEGIN` and `COMMIT` too, through `pgx.TxOptions`. pgx's `rollback` cannot
+  be tagged, so it passes through unscheduled, like pgx's `-- ping` health checks.
+
+**How it is tested:** `TestQueryString` (pgwire, 7 cases) and `TestRequestTag` (17 cases) for
+the parsing; `TestOnQueryReportsTags` checks the hook sees each query, before it is forwarded;
+`TestQueriesCarryRequestTag` runs the coupon app through a real proxy and checks exactly which
+statements carry which tag.
 
 ---
 
@@ -346,6 +375,34 @@ we ran it: `round 2: single-use coupon redeemed 4 times`.
 Finally, press **Ctrl+C** in terminal 1. The proxy prints `racehound proxy: stopped`. Since the
 coupon app's connections are cut, its next request will fail until the proxy is back.
 
+### Step 7: watch the request tags
+Same three terminals as Step 6, but start the proxy with `--verbose`, which logs every query:
+```bash
+go run ./cmd/racehound proxy --verbose
+```
+Reset and start the app (terminal 2) as in Step 6, then send two named requests (terminal 3):
+```bash
+curl -X POST localhost:8081/redeem -H "X-RaceHound-Req: A" -d '{"code":"DIWALI50","user_id":1}'
+curl -X POST localhost:8081/redeem -H "X-RaceHound-Req: B" -d '{"code":"DIWALI50","user_id":2}'
+```
+Terminal 1 shows each statement with its request (when we ran it):
+```
+query [A] /* rh:req=A */ BEGIN
+query [A] /* rh:req=A */ SELECT uses, max_uses FROM coupons WHERE code = 'DIWALI50'
+query [A] /* rh:req=A */ UPDATE coupons SET uses = uses + 1 WHERE code = 'DIWALI50'
+query [A] /* rh:req=A */ INSERT INTO redemptions (code, user_id) VALUES ( 'DIWALI50' , '1' )
+query [A] /* rh:req=A */ COMMIT
+query [B] /* rh:req=B */ BEGIN
+query [B] /* rh:req=B */ SELECT uses, max_uses FROM coupons WHERE code = 'DIWALI50'
+query [-] rollback
+```
+`[-]` means untagged. You will also see `query [-] -- ping` now and then: the connection pool
+checking its connections. A bad header is refused before any SQL runs:
+```bash
+curl -X POST localhost:8081/redeem -H "X-RaceHound-Req: A */ DROP TABLE coupons; --" -d '{"code":"DIWALI50","user_id":3}'
+# → invalid X-RaceHound-Req header
+```
+
 ---
 
 ## Two different "race detectors": do not mix them up
@@ -385,6 +442,10 @@ This is a likely interview question.
   force `simple_protocol`.
 - **Connection pool**: the app keeps a few database connections open and reuses them, instead
   of connecting per request.
+- **Request tag**: the name (A, B, ...) RaceHound gives each HTTP request. The app copies it
+  into a SQL comment, `/* rh:req=A */`, so the proxy knows which request a statement is from.
+- **SQL injection**: user input pasted into SQL that changes what the SQL does. Why the app
+  checks the tag header before using it.
 - **Goroutine / channel / WaitGroup**: Go's lightweight thread / a pipe for passing values (or
   signals) between goroutines / a counter for waiting until a group of goroutines is done.
 
@@ -398,8 +459,8 @@ go.mod, go.sum            Go module "racehound" and its one dependency (pgx, the
 docs/                     SPEC, ARCHITECTURE, ROADMAP, DECISIONS, OVERVIEW, RESULTS
 cmd/racehound/            the racehound command (today: just `racehound proxy`)
 internal/pgwire/          message framing + startup packets (Phase 1, step 1)
-internal/proxy/           pass-through proxy (Phase 1, step 2)
-cmd/bench/                load generator for the proxy overhead measurement  ← newest
+internal/proxy/           pass-through proxy (Phase 1, step 2) + request tags (step 3)  ← newest
+cmd/bench/                load generator for the proxy overhead measurement
 victims/coupon/           the buggy coupon app, its seed data, README and exit test
 docker-compose.yml        only for other people / the final demo; not used on this machine
 ```
@@ -409,9 +470,9 @@ docker-compose.yml        only for other people / the final demo; not used on th
 ## What comes next (rest of Phase 1)
 
 1. ~~**Proxy, pass-through mode**~~: done (section 5 above).
-2. **You:** measure how much slower requests are through the proxy than direct.
-3. **Request tags**: the app marks each statement with `/* rh:req=A */` so the proxy knows
-   which HTTP request it belongs to.
+2. ~~**You:** measure how much slower requests are through the proxy than direct~~: done
+   (`docs/RESULTS.md`; write batching made the proxy 20.5% faster).
+3. ~~**Request tags**~~: done (section 6 above).
 4. **You:** the first scheduler (`internal/sched`): hold statements and release them in a
    hard-coded order.
 5. **Kill test** (Phase 1 exit): one hard-coded order causes the double-redeem 10 out of 10

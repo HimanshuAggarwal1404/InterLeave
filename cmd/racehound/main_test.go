@@ -21,3 +21,18 @@ func TestRunUsageErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestQueryLogLine(t *testing.T) {
+	tests := []struct {
+		tag, sql, want string
+	}{
+		{"A", "/* rh:req=A */ SELECT 1", "query [A] /* rh:req=A */ SELECT 1"},
+		{"", "begin", "query [-] begin"},
+		{"B", "/* rh:req=B */ SELECT 1\n  FROM t", "query [B] /* rh:req=B */ SELECT 1 FROM t"},
+	}
+	for _, tt := range tests {
+		if got := queryLogLine(tt.tag, tt.sql); got != tt.want {
+			t.Errorf("queryLogLine(%q, %q) = %q, want %q", tt.tag, tt.sql, got, tt.want)
+		}
+	}
+}

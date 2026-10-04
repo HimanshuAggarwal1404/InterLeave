@@ -7,6 +7,8 @@ import (
 	"io"
 	"testing"
 	"time"
+
+	"racehound/internal/pgwire"
 )
 
 var (
@@ -33,7 +35,7 @@ func TestForwardBatchesMessagesThatArriveTogether(t *testing.T) {
 	burst := concat(commandComplete, readyIdle, commandComplete, readyIdle)
 	rec := make(writeRecorder, 10)
 
-	err := forward(rec, bufio.NewReader(bytes.NewReader(burst)))
+	err := forward(rec, bufio.NewReader(bytes.NewReader(burst)), nil)
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("forward returned %v, want io.EOF", err)
 	}
@@ -54,7 +56,7 @@ func TestForwardSendsCompleteMessageWithoutWaitingForNext(t *testing.T) {
 	pr, pw := io.Pipe()
 	rec := make(writeRecorder, 10)
 	done := make(chan error, 1)
-	go func() { done <- forward(rec, bufio.NewReader(pr)) }()
+	go func() { done <- forward(rec, bufio.NewReader(pr), nil) }()
 
 	half := len(commandComplete) / 2
 	if _, err := pw.Write(concat(readyIdle, commandComplete[:half])); err != nil {
@@ -76,6 +78,38 @@ func TestForwardSendsCompleteMessageWithoutWaitingForNext(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("forward did not return after its input closed")
 	}
+}
+
+// inspect may block (the scheduler will park a query there), so forward must
+// first send any bytes it is holding back from earlier messages. Here two
+// messages arrive together: when inspect sees the second, the first must
+// already be written.
+func TestForwardSendsHeldBytesBeforeInspect(t *testing.T) {
+	rec := make(writeRecorder, 10)
+	var inspected []byte
+	inspect := func(m pgwire.Message) {
+		if m.Type != 'Q' {
+			return
+		}
+		inspected = m.Raw
+		select {
+		case got := <-rec:
+			if !bytes.Equal(got, readyIdle) {
+				t.Errorf("before inspecting the query, wrote %q, want %q", got, readyIdle)
+			}
+		default:
+			t.Error("inspect was called while the earlier message was still held back")
+		}
+	}
+
+	err := forward(rec, bufio.NewReader(bytes.NewReader(concat(readyIdle, query))), inspect)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("forward returned %v, want io.EOF", err)
+	}
+	if !bytes.Equal(inspected, query) {
+		t.Errorf("inspect saw %q, want the query %q", inspected, query)
+	}
+	expectWrite(t, rec, query)
 }
 
 func expectWrite(t *testing.T, rec writeRecorder, want []byte) {

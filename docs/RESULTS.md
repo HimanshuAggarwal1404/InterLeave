@@ -9,14 +9,14 @@ never estimate. These numbers feed the README and resume bullets, so they must b
 ## Pass-through overhead (Phase 1)
 | Date | Commit | Requests/sec direct | Requests/sec via proxy | Overhead | Command |
 |---|---|---|---|---|---|
-| 2026-10-04 (run 1, setups one after the other) | f67f182 (+ uncommitted `cmd/bench`) | 20766.9 median (18593.0-22885.4) | 11346.1 median (10628.9-12039.0) | 45.4% fewer req/s; p50 577µs → 1.259ms | `go run ./cmd/bench` (defaults: 16 workers, 3s warmup, 3 x 10s) |
+| 2026-10-04 (run 1, setups one after the other) | f67f182 (proxy); first version of `cmd/bench`, committed in af4f09b | 20766.9 median (18593.0-22885.4) | 11346.1 median (10628.9-12039.0) | 45.4% fewer req/s; p50 577µs → 1.259ms | `go run ./cmd/bench` (defaults: 16 workers, 3s warmup, 3 x 10s) |
 | 2026-10-04 (run 2, alternating), old proxy | f67f182 (`bin/racehound-old.exe`) | 17575.1 median (15273.1-23735.2) | 9414.3 median (8627.7-10889.9) | 46.4% fewer req/s; p50 695.5µs → 1.673ms | `go run ./cmd/bench --rounds 4 http://localhost:8081/redeem http://localhost:8082/redeem http://localhost:8083/redeem` (old proxy = 8082) |
-| 2026-10-04 (run 2, alternating), new proxy | uncommitted, on top of f67f182 (write batching) | same run as above | 11348.4 median (10644.5-11716.6) | 35.4% fewer req/s; p50 695.5µs → 1.223ms | same command as above (new proxy = 8083) |
+| 2026-10-04 (run 2, alternating), new proxy | af4f09b (write batching) | same run as above | 11348.4 median (10644.5-11716.6) | 35.4% fewer req/s; p50 695.5µs → 1.223ms | same command as above (new proxy = 8083) |
 
 ### Before/after: write batching in the proxy (old vs new, run 2)
 
 Date: 2026-10-04. Before = commit f67f182 (one `Write` per message). After = write batching,
-**uncommitted, on top of f67f182** (replace with the commit hash once committed). Both proxies and
+**af4f09b**. Both proxies and
 the direct app ran at the same time and were measured in alternating order, so they share
 conditions. Direct baseline in the same run: 17575.1 req/s, p50 695.5 µs.
 
@@ -86,7 +86,7 @@ redo with a fixed number of rounds per trial before quoting it.
 ## Optimisations (Phase 3)
 | Date | Commit | Optimisation | Metric | Before | After |
 |---|---|---|---|---|---|
-| 2026-10-04 | before f67f182, after uncommitted on top of it | Proxy write batching: send messages that arrived together in one `Write` (done in Phase 1, D-014) | req/s through proxy, coupon 409 path, median of 4 alternating rounds | 9414.3 | 11348.4 (+20.5%; faster in 4/4 rounds) |
+| 2026-10-04 | before f67f182, after af4f09b | Proxy write batching: send messages that arrived together in one `Write` (done in Phase 1, D-014) | req/s through proxy, coupon 409 path, median of 4 alternating rounds | 9414.3 | 11348.4 (+20.5%; faster in 4/4 rounds) |
 | 2026-10-04 | same | same | p50 latency the proxy adds per request (vs direct, same run) | 0.98 ms | 0.53 ms |
 
 Command for both rows: `go run ./cmd/bench --rounds 4 http://localhost:8081/redeem

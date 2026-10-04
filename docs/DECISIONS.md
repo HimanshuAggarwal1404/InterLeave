@@ -172,3 +172,42 @@ Consequences: Measured in one alternating run (old vs new proxy, 4 x 10s): +20.5
 (~0.18 ms per round trip). Still -35.4% vs direct on this tiny-query workload; the rest is
 probably the extra hop itself (not profiled; pprof in Phase 3). Tag extraction must keep this
 rule when it starts parsing `Q` messages in the same loop.
+
+## D-015: Request tag only at the very start of the query; tag is 1-64 of A-Z a-z 0-9 _ -
+Status: Accepted      Date: 2026-10-04
+Context: The proxy must find `/* rh:req=X */` (D-004) in each Query. Where may it appear, and
+what may X contain?
+Decision: Only as the first thing in the query (leading whitespace and spaces inside the comment
+allowed). X is 1-64 characters of `A-Z a-z 0-9 _ -`. A query that starts with our comment but
+has a broken one (unclosed, bad characters) is logged and treated as untagged.
+Alternatives: anywhere in the query (text inside a string value, e.g. a user name
+`'/* rh:req=A */'`, would pose as a tag unless we parse SQL quoting); start or end (also covers
+sqlcommenter, which puts comments at the end; more code, not needed for our victims).
+Consequences: Strict, simple and cannot be fooled by data. Apps using sqlcommenter (Phase 4) need
+this revisited. Victim apps validate the X-RaceHound-Req header with the same rule, because the
+tag is pasted into SQL (otherwise SQL injection).
+
+## D-016: Statements the app cannot tag pass through unscheduled (incl. pgx's ROLLBACK)
+Status: Accepted      Date: 2026-10-04
+Context: pgx sends BEGIN/COMMIT/ROLLBACK itself. `pgx.TxOptions{BeginQuery, CommitQuery}` lets
+the app tag BEGIN and COMMIT, but ROLLBACK is always the plain text `rollback`. ORMs usually allow
+none of this.
+Decision: Keep FR-8 as written: untagged statements are forwarded at once and not scheduled.
+Victims tag BEGIN/COMMIT via TxOptions; ROLLBACK (failure paths only) goes unscheduled.
+Alternatives: inherit the tag inside a transaction (the proxy remembers a connection's last tag
+while ReadyForQuery says `T`/`E`; works for ORMs, but more proxy state and edge cases now).
+Consequences: Simplest rule; the kill test only needs tagged SELECT/UPDATE/INSERT/COMMIT. The
+explorer cannot choose when a ROLLBACK runs. Revisit (tag inheritance) for ORM apps in Phase 4.
+
+## D-017: Proxy reports queries through a callback, `Proxy.OnQuery(tag, sql)`, before forwarding
+Status: Proposed      Date: 2026-10-04
+Context: The proxy now knows each query's request tag (D-015). Something outside the proxy (today
+`--verbose` logging and tests, next the scheduler) must see each query, and the scheduler must be
+able to hold it.
+Decision: An optional function field on `Proxy`, called on the app→Postgres goroutine for every
+`Q` message before it is forwarded. If it blocks, that connection's query waits (parking); per
+D-014 the proxy first sends any bytes it is holding. Nil means pure forwarding, no parsing cost.
+Alternatives: a channel of query events (cannot hold a query without an extra reply channel);
+an interface type (more ceremony for one method).
+Consequences: Small and easy to test. Not final: the proxy↔sched interface (also "step done" on
+ReadyForQuery, FR-5) is to be agreed before `sched` is written.

@@ -19,6 +19,12 @@ import (
 // Proxy forwards client connections to one local Postgres server.
 type Proxy struct {
 	upstream string
+
+	// OnQuery, if set, is called for every simple Query an app sends, before
+	// the query is forwarded, with its request tag ("" if untagged, D-015) and
+	// SQL text. It runs on each connection's own goroutine, so calls for
+	// different connections can happen at the same time. Set it before Serve.
+	OnQuery func(tag, sql string)
 }
 
 // New returns a proxy that forwards to upstream ("host:port"). The host must
@@ -105,16 +111,38 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 		client.Close()
 		server.Close()
 	}
+	var inspect func(pgwire.Message) // nil: nothing to look at, pure forwarding
+	if p.OnQuery != nil {
+		inspect = func(m pgwire.Message) { p.inspectQuery(client, m) }
+	}
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		defer closeBoth()
-		logUnlessClosed(client, "app→postgres", forward(server, clientR))
+		logUnlessClosed(client, "app→postgres", forward(server, clientR, inspect))
 	})
 	wg.Go(func() {
 		defer closeBoth()
-		logUnlessClosed(client, "postgres→app", forward(client, serverR))
+		logUnlessClosed(client, "postgres→app", forward(client, serverR, nil))
 	})
 	wg.Wait()
+}
+
+// inspectQuery reports a Query message to OnQuery. Anything wrong with it is
+// logged, not fatal: the message is forwarded anyway and Postgres judges it.
+func (p *Proxy) inspectQuery(client net.Conn, m pgwire.Message) {
+	if m.Type != 'Q' {
+		return
+	}
+	sql, err := pgwire.QueryString(m)
+	if err != nil {
+		log.Printf("proxy: %s: %v", client.RemoteAddr(), err)
+		return
+	}
+	tag, err := requestTag(sql)
+	if err != nil {
+		log.Printf("proxy: %s: %v (treated as untagged)", client.RemoteAddr(), err)
+	}
+	p.OnQuery(tag, sql)
 }
 
 // readStartup reads startup packets until one is not an encryption request.
@@ -144,12 +172,24 @@ func readStartup(client net.Conn, r *bufio.Reader) (pgwire.Startup, error) {
 // one Write per message costs a system call and a TCP packet each. The buffer
 // is flushed as soon as src holds no further complete message, so forward never
 // waits for input while holding bytes it has not sent.
-func forward(dst io.Writer, src *bufio.Reader) error {
+//
+// If inspect is not nil it sees every message before the message is
+// forwarded. inspect may block (a parked query waits there), so by the same
+// rule anything held back is sent before inspect is called.
+func forward(dst io.Writer, src *bufio.Reader, inspect func(pgwire.Message)) error {
 	w := bufio.NewWriterSize(dst, 64*1024)
 	for {
 		m, err := pgwire.ReadMessage(src)
 		if err != nil {
 			return err
+		}
+		if inspect != nil {
+			if w.Buffered() > 0 {
+				if err := w.Flush(); err != nil {
+					return err
+				}
+			}
+			inspect(m)
 		}
 		if _, err := w.Write(m.Raw); err != nil {
 			return err

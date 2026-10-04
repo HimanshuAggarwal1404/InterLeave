@@ -52,12 +52,19 @@ func main() {
 func newHandler(pool *pgxpool.Pool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /redeem", func(w http.ResponseWriter, r *http.Request) {
+		// RaceHound names each request it fires (A, B, ...). The tag goes into
+		// SQL, so anything but a plain tag is refused (no SQL injection).
+		tag := r.Header.Get("X-RaceHound-Req")
+		if tag != "" && !validTag(tag) {
+			http.Error(w, "invalid X-RaceHound-Req header", http.StatusBadRequest)
+			return
+		}
 		var req redeemRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid JSON body", http.StatusBadRequest)
 			return
 		}
-		status, msg := redeem(r.Context(), pool, req)
+		status, msg := redeem(r.Context(), pool, tagComment(tag), req)
 		w.WriteHeader(status)
 		fmt.Fprintln(w, msg)
 	})
@@ -65,8 +72,11 @@ func newHandler(pool *pgxpool.Pool) http.Handler {
 }
 
 // redeem returns the HTTP status and message for one redemption attempt.
-func redeem(ctx context.Context, pool *pgxpool.Pool, req redeemRequest) (int, string) {
-	tx, err := pool.Begin(ctx)
+// tc is the RaceHound tag comment that starts every statement ("" if none).
+func redeem(ctx context.Context, pool *pgxpool.Pool, tc string, req redeemRequest) (int, string) {
+	// pgx lets us choose the BEGIN and COMMIT text, so those are tagged too.
+	// Its ROLLBACK cannot be, so it passes through RaceHound unscheduled (D-016).
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{BeginQuery: tc + "BEGIN", CommitQuery: tc + "COMMIT"})
 	if err != nil {
 		return serverError(err)
 	}
@@ -74,7 +84,7 @@ func redeem(ctx context.Context, pool *pgxpool.Pool, req redeemRequest) (int, st
 
 	// Check.
 	var uses, maxUses int
-	err = tx.QueryRow(ctx, "SELECT uses, max_uses FROM coupons WHERE code = $1", req.Code).
+	err = tx.QueryRow(ctx, tc+"SELECT uses, max_uses FROM coupons WHERE code = $1", req.Code).
 		Scan(&uses, &maxUses)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return http.StatusNotFound, "unknown coupon"
@@ -88,10 +98,10 @@ func redeem(ctx context.Context, pool *pgxpool.Pool, req redeemRequest) (int, st
 
 	// Act. THE BUG: another request may have redeemed the coupon since our
 	// SELECT, but we go ahead because our (now stale) check passed.
-	if _, err := tx.Exec(ctx, "UPDATE coupons SET uses = uses + 1 WHERE code = $1", req.Code); err != nil {
+	if _, err := tx.Exec(ctx, tc+"UPDATE coupons SET uses = uses + 1 WHERE code = $1", req.Code); err != nil {
 		return serverError(err)
 	}
-	if _, err := tx.Exec(ctx, "INSERT INTO redemptions (code, user_id) VALUES ($1, $2)", req.Code, req.UserID); err != nil {
+	if _, err := tx.Exec(ctx, tc+"INSERT INTO redemptions (code, user_id) VALUES ($1, $2)", req.Code, req.UserID); err != nil {
 		return serverError(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -103,4 +113,26 @@ func redeem(ctx context.Context, pool *pgxpool.Pool, req redeemRequest) (int, st
 func serverError(err error) (int, string) {
 	log.Printf("redeem: %v", err)
 	return http.StatusInternalServerError, "internal error"
+}
+
+// tagComment returns the SQL comment that tells RaceHound which request a
+// statement belongs to, e.g. "/* rh:req=A */ ", or "" without a tag.
+func tagComment(tag string) string {
+	if tag == "" {
+		return ""
+	}
+	return "/* rh:req=" + tag + " */ "
+}
+
+// validTag accepts the tags RaceHound uses: 1-64 of A-Z a-z 0-9 _ -.
+func validTag(tag string) bool {
+	if len(tag) > 64 {
+		return false
+	}
+	for _, c := range []byte(tag) {
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return tag != ""
 }
