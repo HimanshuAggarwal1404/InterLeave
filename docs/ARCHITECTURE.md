@@ -28,6 +28,7 @@ The proxy runs inside the `racehound run` process, so the scheduler and proxy sh
 
 ```
 cmd/racehound/        CLI entry point: run, replay, proxy subcommands (flag parsing only)
+cmd/bench/            HTTP load generator for the pass-through overhead measurement (NFR-3)
 internal/pgwire/      Message framing: read/write typed messages, startup packets. No policy.
 internal/proxy/       Accepts client conns, dials upstream, forwards bytes, extracts request
                       tags, hands tagged Query messages to the scheduler, reports completions.

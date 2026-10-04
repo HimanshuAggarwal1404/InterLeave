@@ -131,7 +131,7 @@ Consequences: Builds and tests work the same. When publishing, rename the module
 and imports (one find-and-replace) so others can `go install` it.
 
 ## D-012: Proxy listens on localhost only; upstream must be loopback
-Status: Proposed      Date: 2026-10-04
+Status: Accepted      Date: 2026-10-04
 Context: SPEC section 3 showed `--listen :6433`. In Go, `:6433` binds every network interface, so
 anyone on the same Wi-Fi could reach the local Postgres through the proxy, and Postgres would
 see them as connecting from localhost (often trusted more in pg_hba.conf).
@@ -154,3 +154,21 @@ Alternatives: a ctx parameter that is ignored (misleading); per-read deadlines f
 (more code, same effect).
 Consequences: `pgwire` stays pure and easy to unit-test with `bytes.Reader`; the proxy is the
 single place that decides when connections close.
+
+## D-014: Proxy batches writes: send messages that arrived together in one Write
+Status: Accepted      Date: 2026-10-04
+Context: `cmd/bench` showed the pass-through proxy costing 45-46% of throughput on the coupon app
+(RESULTS.md). `proxy.forward` wrote each message on its own, so a Postgres reply sent in one go
+(RowDescription, DataRow, CommandComplete, ReadyForQuery) left the proxy as 4 writes: 4 system
+calls and usually 4 TCP packets.
+Decision: `forward` writes into a 64 KiB `bufio.Writer` and flushes as soon as the read buffer
+holds no further complete message. So it never waits for input while holding unsent bytes (no
+hang when only half of the next message has arrived). Bytes are still forwarded unchanged.
+Alternatives: flush only after ReadyForQuery (`Z`) (protocol-specific; would hold startup, COPY
+and NOTICE traffic); flush only when the read buffer is empty (can hold a complete message while
+waiting for the rest of a split one); keep one write per message (measured too slow).
+Consequences: Measured in one alternating run (old vs new proxy, 4 x 10s): +20.5% req/s
+(9414.3 → 11348.4, faster in 4/4 rounds); added p50 latency per request 0.98 ms → 0.53 ms
+(~0.18 ms per round trip). Still -35.4% vs direct on this tiny-query workload; the rest is
+probably the extra hop itself (not profiled; pprof in Phase 3). Tag extraction must keep this
+rule when it starts parsing `Q` messages in the same loop.

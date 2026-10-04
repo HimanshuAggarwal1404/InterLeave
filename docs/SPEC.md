@@ -54,7 +54,7 @@ invariants:                             # each must return a single boolean true
 ## 5. Functional requirements
 
 **Proxy**
-- FR-1: Accept client connections on `:6433` and open one upstream connection per client to Postgres.
+- FR-1: Accept client connections on `localhost:6433` and open one upstream connection per client to Postgres.
 - FR-2: Handle the startup phase transparently: reply `N` to `SSLRequest` (and to `GSSENCRequest`),
   forward the `StartupMessage` and all authentication messages unchanged, record the backend
   process ID from `BackendKeyData`.

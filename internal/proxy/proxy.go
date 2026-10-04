@@ -5,6 +5,7 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -136,16 +137,42 @@ func readStartup(client net.Conn, r *bufio.Reader) (pgwire.Startup, error) {
 
 // forward copies messages from src to dst, byte for byte, until either side
 // fails or closes.
+//
+// Messages that arrived together leave together: they are collected in a
+// buffer and sent in one Write, because Postgres sends a whole reply
+// (RowDescription, DataRow..., CommandComplete, ReadyForQuery) in one go and
+// one Write per message costs a system call and a TCP packet each. The buffer
+// is flushed as soon as src holds no further complete message, so forward never
+// waits for input while holding bytes it has not sent.
 func forward(dst io.Writer, src *bufio.Reader) error {
+	w := bufio.NewWriterSize(dst, 64*1024)
 	for {
 		m, err := pgwire.ReadMessage(src)
 		if err != nil {
 			return err
 		}
-		if _, err := dst.Write(m.Raw); err != nil {
+		if _, err := w.Write(m.Raw); err != nil {
 			return err
 		}
+		if !hasCompleteMessage(src) {
+			if err := w.Flush(); err != nil {
+				return err
+			}
+		}
 	}
+}
+
+// hasCompleteMessage reports whether r's buffer already holds a whole message,
+// so reading it cannot block. Peek within Buffered() never reads from the
+// network.
+func hasCompleteMessage(r *bufio.Reader) bool {
+	n := r.Buffered()
+	if n < 5 {
+		return false
+	}
+	header, _ := r.Peek(5)
+	length := int64(binary.BigEndian.Uint32(header[1:5])) // includes its own 4 bytes, not the type byte
+	return int64(n) >= 1+length
 }
 
 // logUnlessClosed logs err unless it is the normal end of a connection: the

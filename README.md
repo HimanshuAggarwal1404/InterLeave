@@ -191,6 +191,11 @@ anything. Later, the "hold at the red light" logic goes inside it.
 3. **Pump.** Two goroutines: one copies app → Postgres, the other Postgres → app, one
    message at a time with `pgwire.ReadMessage`. The login (SCRAM password exchange) flows
    through untouched. The proxy never sees or needs the password.
+4. **Send in batches.** Postgres sends a whole reply (columns, rows, "done", "ready") in one
+   go. The proxy reads those messages one by one, but collects them and sends them on together
+   as soon as nothing more is already waiting to be read. The first version sent each message
+   separately, which made the app about 45% slower (see `docs/RESULTS.md`). It never holds
+   bytes back while waiting for more input, so batching cannot cause a hang.
 
 **Who closes what (the tricky part).** A goroutine waiting in `Read` cannot notice that the
 other direction has finished. So the rule is: *whichever pump stops first closes both
@@ -206,7 +211,7 @@ is left running. The tests check this.
   network interface", which would let anyone on your Wi-Fi reach your Postgres through the
   proxy. Postgres would also see those connections as coming from localhost.
 
-**How it is tested** (`internal/proxy/proxy_test.go`, 7 tests):
+**How it is tested** (`internal/proxy/proxy_test.go`, 7 tests; `forward_test.go`, 2 tests):
 - With a **fake Postgres** (a socket the test controls): SSL gets `N`; the startup, the
   server's replies, a query and the goodbye are each forwarded byte for byte; if Postgres hangs
   up, the app's connection closes; a CancelRequest is forwarded; an unreachable Postgres
@@ -214,6 +219,8 @@ is left running. The tests check this.
 - With your **real Postgres 18**: pgx connects through the proxy, logs in with SCRAM, runs 20
   queries at once over 5 connections and does a transaction. It does this twice: once with
   `sslmode=disable` and once with `sslmode=prefer` (which sends the SSL request).
+- `forward` on its own: a burst of messages leaves in one write, and a complete message is
+  sent at once even when only half of the next one has arrived.
 - All of it passes 20 times in a row under `go test -race`.
 
 **The command** (`cmd/racehound/main.go`): `racehound proxy [--listen ...] [--upstream ...]`.
@@ -391,7 +398,8 @@ go.mod, go.sum            Go module "racehound" and its one dependency (pgx, the
 docs/                     SPEC, ARCHITECTURE, ROADMAP, DECISIONS, OVERVIEW, RESULTS
 cmd/racehound/            the racehound command (today: just `racehound proxy`)
 internal/pgwire/          message framing + startup packets (Phase 1, step 1)
-internal/proxy/           pass-through proxy (Phase 1, step 2)  ← newest
+internal/proxy/           pass-through proxy (Phase 1, step 2)
+cmd/bench/                load generator for the proxy overhead measurement  ← newest
 victims/coupon/           the buggy coupon app, its seed data, README and exit test
 docker-compose.yml        only for other people / the final demo; not used on this machine
 ```
