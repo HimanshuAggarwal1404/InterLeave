@@ -24,9 +24,8 @@ import (
 // Whether the bad interleaving happens depends on timing, so it tries several
 // rounds. This is the luck-based "blasting" that Interleave will replace.
 func TestRaceIsReal(t *testing.T) {
-	ctx := context.Background()
 	pool := testPool(t)
-	srv := httptest.NewServer(newHandler(pool))
+	srv := httptest.NewServer(newHandler(pool, false))
 	defer srv.Close()
 
 	const rounds, concurrent = 20, 50
@@ -34,13 +33,7 @@ func TestRaceIsReal(t *testing.T) {
 		resetDB(t, pool)
 		fireConcurrently(t, srv.URL, concurrent)
 
-		var uses, maxUses, redemptions int
-		err := pool.QueryRow(ctx, `SELECT uses, max_uses,
-			(SELECT count(*) FROM redemptions WHERE code = 'DIWALI50')
-			FROM coupons WHERE code = 'DIWALI50'`).Scan(&uses, &maxUses, &redemptions)
-		if err != nil {
-			t.Fatalf("round %d: read coupon: %v", round, err)
-		}
+		uses, maxUses, redemptions := readCoupon(t, pool)
 		if uses > maxUses {
 			t.Logf("round %d: single-use coupon redeemed %d times (%d redemption rows)",
 				round, uses, redemptions)
@@ -48,6 +41,40 @@ func TestRaceIsReal(t *testing.T) {
 		}
 	}
 	t.Fatalf("no over-redeem in %d rounds of %d concurrent requests", rounds, concurrent)
+}
+
+// TestFixedNeverOverRedeems blasts the --fixed variant exactly like
+// TestRaceIsReal blasts the buggy one. With the row locked during the check,
+// no round may over-redeem, and exactly one request must win.
+func TestFixedNeverOverRedeems(t *testing.T) {
+	pool := testPool(t)
+	srv := httptest.NewServer(newHandler(pool, true))
+	defer srv.Close()
+
+	const rounds, concurrent = 20, 50
+	for round := 1; round <= rounds; round++ {
+		resetDB(t, pool)
+		fireConcurrently(t, srv.URL, concurrent)
+
+		uses, maxUses, redemptions := readCoupon(t, pool)
+		if uses > maxUses || redemptions != 1 {
+			t.Fatalf("round %d: --fixed gave uses = %d (max %d), %d redemption rows; want 1 and 1",
+				round, uses, maxUses, redemptions)
+		}
+	}
+}
+
+// readCoupon returns the coupon's use count, its limit, and how many
+// redemption rows exist: the invariant is uses <= max_uses.
+func readCoupon(t *testing.T, pool *pgxpool.Pool) (uses, maxUses, redemptions int) {
+	t.Helper()
+	err := pool.QueryRow(context.Background(), `SELECT uses, max_uses,
+		(SELECT count(*) FROM redemptions WHERE code = 'DIWALI50')
+		FROM coupons WHERE code = 'DIWALI50'`).Scan(&uses, &maxUses, &redemptions)
+	if err != nil {
+		t.Fatalf("read coupon: %v", err)
+	}
+	return uses, maxUses, redemptions
 }
 
 // testPool connects to the interleave database directly (port 5432, bypassing
@@ -110,7 +137,11 @@ func fireConcurrently(t *testing.T, baseURL string, n int) {
 func TestQueriesCarryRequestTag(t *testing.T) {
 	resetDB(t, testPool(t))
 	seen := &queryLog{}
-	srv := httptest.NewServer(newHandler(poolViaProxy(t, seen.record)))
+	hook := func(_ context.Context, tag, sql string) func(byte) {
+		seen.record(tag, sql)
+		return nil
+	}
+	srv := httptest.NewServer(newHandler(poolViaProxy(t, hook), false))
 	defer srv.Close()
 
 	// A redeems the unused coupon: every statement, BEGIN to COMMIT, is tagged.
@@ -156,17 +187,14 @@ func TestQueriesCarryRequestTag(t *testing.T) {
 }
 
 // poolViaProxy starts an in-process Interleave proxy in front of the local
-// Postgres, reporting every query to onQuery, and returns a pool through it.
-func poolViaProxy(t *testing.T, onQuery func(tag, sql string)) *pgxpool.Pool {
+// Postgres, with hook as its OnQuery, and returns a pool through it.
+func poolViaProxy(t *testing.T, hook func(ctx context.Context, tag, sql string) func(byte)) *pgxpool.Pool {
 	t.Helper()
 	p, err := proxy.New("localhost:5432")
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.OnQuery = func(_ context.Context, tag, sql string) func(byte) {
-		onQuery(tag, sql)
-		return nil
-	}
+	p.OnQuery = hook
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

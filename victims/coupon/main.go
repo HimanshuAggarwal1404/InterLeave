@@ -5,6 +5,7 @@
 // a separate statement (check-then-act). BEGIN does not make this safe: under
 // READ COMMITTED (the Postgres default) a plain SELECT takes no lock, so two
 // concurrent requests can both see uses = 0 and both redeem a single-use coupon.
+// --fixed locks the row during the check (SELECT ... FOR UPDATE), which is correct.
 package main
 
 import (
@@ -34,6 +35,7 @@ type redeemRequest struct {
 func main() {
 	addr := flag.String("addr", "localhost:8081", "HTTP listen address")
 	dsn := flag.String("dsn", proxyDSN, "Postgres connection string (use port 5432 to bypass Interleave)")
+	fixed := flag.Bool("fixed", false, "use the correct implementation (SELECT ... FOR UPDATE)")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -45,11 +47,11 @@ func main() {
 		log.Fatalf("cannot reach Postgres at %s: %v", *dsn, err)
 	}
 
-	log.Printf("coupon victim listening on http://%s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, newHandler(pool)))
+	log.Printf("coupon victim listening on http://%s (fixed=%t)", *addr, *fixed)
+	log.Fatal(http.ListenAndServe(*addr, newHandler(pool, *fixed)))
 }
 
-func newHandler(pool *pgxpool.Pool) http.Handler {
+func newHandler(pool *pgxpool.Pool, fixed bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /redeem", func(w http.ResponseWriter, r *http.Request) {
 		// Interleave names each request it fires (A, B, ...). The tag goes into
@@ -64,7 +66,7 @@ func newHandler(pool *pgxpool.Pool) http.Handler {
 			http.Error(w, "invalid JSON body", http.StatusBadRequest)
 			return
 		}
-		status, msg := redeem(r.Context(), pool, tagComment(tag), req)
+		status, msg := redeem(r.Context(), pool, tagComment(tag), fixed, req)
 		w.WriteHeader(status)
 		fmt.Fprintln(w, msg)
 	})
@@ -73,7 +75,8 @@ func newHandler(pool *pgxpool.Pool) http.Handler {
 
 // redeem returns the HTTP status and message for one redemption attempt.
 // tc is the Interleave tag comment that starts every statement ("" if none).
-func redeem(ctx context.Context, pool *pgxpool.Pool, tc string, req redeemRequest) (int, string) {
+// fixed selects the correct implementation (--fixed).
+func redeem(ctx context.Context, pool *pgxpool.Pool, tc string, fixed bool, req redeemRequest) (int, string) {
 	// pgx lets us choose the BEGIN and COMMIT text, so those are tagged too.
 	// Its ROLLBACK cannot be, so it passes through Interleave unscheduled (D-016).
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{BeginQuery: tc + "BEGIN", CommitQuery: tc + "COMMIT"})
@@ -83,9 +86,14 @@ func redeem(ctx context.Context, pool *pgxpool.Pool, tc string, req redeemReques
 	defer tx.Rollback(ctx) // no-op once Commit has succeeded
 
 	// Check.
+	check := "SELECT uses, max_uses FROM coupons WHERE code = $1"
+	if fixed {
+		// THE FIX: lock the row while checking. A concurrent redeem's check now
+		// waits until we commit, then reads the new count and is refused.
+		check += " FOR UPDATE"
+	}
 	var uses, maxUses int
-	err = tx.QueryRow(ctx, tc+"SELECT uses, max_uses FROM coupons WHERE code = $1", req.Code).
-		Scan(&uses, &maxUses)
+	err = tx.QueryRow(ctx, tc+check, req.Code).Scan(&uses, &maxUses)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return http.StatusNotFound, "unknown coupon"
 	}
