@@ -46,12 +46,13 @@ replay that order on demand. Instead of hoping to get unlucky, it tries every or
 | 6 | `interleave proxy` command | Runs the proxy from the terminal on port 6433 | `cmd/interleave/` |
 | 7 | Overhead benchmark | Measures requests/sec with and without the proxy (results in `docs/RESULTS.md`) | `cmd/bench/` |
 | 8 | Request tags (Phase 1, step 3) | Each statement says which HTTP request it belongs to; the proxy reads it | `internal/proxy/tag.go`, `victims/coupon/` |
+| 8b | Step done (Phase 1, step 4) | The proxy tells its hook when each statement has finished, and how (`ReadyForQuery` status) | `internal/proxy/proxy.go`, `internal/pgwire/ready.go` |
 | 9 | Project docs | Spec, architecture, roadmap, decisions, overview, results | `docs/` |
 
 The order-trying engine (scheduler, explorer, invariant checker) does not exist yet. So far we
 have the **test subject** (the buggy app), **proof the bug is real**, and the **proxy** that
-the engine will be built into. The proxy already knows which request each statement belongs to,
-but it still passes everything straight through, without holding anything back.
+the engine will be built into. The proxy already knows which request each statement belongs to
+and when each one finishes, but nothing holds statements back yet: that is the scheduler's job.
 
 ### 2. The coupon victim app (`victims/coupon/`)
 
@@ -242,7 +243,13 @@ requests (D-004). So the requests carry a name:
 2. The app puts that name in a SQL comment at the start of every statement:
    `/* il:req=A */ SELECT uses, max_uses FROM coupons ...`. Postgres ignores comments.
 3. The proxy reads the comment (`requestTag`) and reports `(tag, sql)` through its `OnQuery`
-   hook. The scheduler will plug in there to hold statements.
+   hook. The scheduler will plug in there to hold statements: while the hook blocks, the
+   statement waits.
+4. When Postgres finishes a statement it sends `ReadyForQuery` (`Z`) with a status byte: `I`
+   idle, `T` inside a transaction, `E` inside a failed one. The hook may return a `done`
+   function for the statement; the proxy calls it with that status once the `Z` has reached
+   the app, so the scheduler knows the step is over (D-017). Postgres answers a connection's
+   statements in order, so a per-connection queue pairs each `Z` with its statement.
 
 Rules (D-015, D-016):
 - The tag counts **only at the very start** of the query, so text inside a value (say a user
@@ -255,7 +262,9 @@ Rules (D-015, D-016):
 **How it is tested:** `TestQueryString` (pgwire, 7 cases) and `TestRequestTag` (17 cases) for
 the parsing; `TestOnQueryReportsTags` checks the hook sees each query, before it is forwarded;
 `TestQueriesCarryRequestTag` runs the coupon app through a real proxy and checks exactly which
-statements carry which tag.
+statements carry which tag. For "step done": `TestReadyStatus` (7 cases),
+`TestForwardReportsReadyAfterSendingIt`, `TestDoneGetsEachQuerysReadyStatus` (including two
+statements sent before either reply) and `TestShutdownReleasesParkedQuery`.
 
 ---
 

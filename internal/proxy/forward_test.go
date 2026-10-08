@@ -16,6 +16,8 @@ var (
 	commandComplete = append([]byte{'C', 0x00, 0x00, 0x00, 0x0d}, "SELECT 1\x00"...)
 	// 'Z' ReadyForQuery, idle.
 	readyIdle = []byte{'Z', 0x00, 0x00, 0x00, 0x05, 'I'}
+	// 'Z' ReadyForQuery, inside a transaction block.
+	readyInTx = []byte{'Z', 0x00, 0x00, 0x00, 0x05, 'T'}
 )
 
 // writeRecorder remembers every Write call separately, so a test can see how
@@ -35,7 +37,7 @@ func TestForwardBatchesMessagesThatArriveTogether(t *testing.T) {
 	burst := concat(commandComplete, readyIdle, commandComplete, readyIdle)
 	rec := make(writeRecorder, 10)
 
-	err := forward(rec, bufio.NewReader(bytes.NewReader(burst)), nil)
+	err := forward(rec, bufio.NewReader(bytes.NewReader(burst)), nil, nil)
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("forward returned %v, want io.EOF", err)
 	}
@@ -56,7 +58,7 @@ func TestForwardSendsCompleteMessageWithoutWaitingForNext(t *testing.T) {
 	pr, pw := io.Pipe()
 	rec := make(writeRecorder, 10)
 	done := make(chan error, 1)
-	go func() { done <- forward(rec, bufio.NewReader(pr), nil) }()
+	go func() { done <- forward(rec, bufio.NewReader(pr), nil, nil) }()
 
 	half := len(commandComplete) / 2
 	if _, err := pw.Write(concat(readyIdle, commandComplete[:half])); err != nil {
@@ -102,7 +104,7 @@ func TestForwardSendsHeldBytesBeforeInspect(t *testing.T) {
 		}
 	}
 
-	err := forward(rec, bufio.NewReader(bytes.NewReader(concat(readyIdle, query))), inspect)
+	err := forward(rec, bufio.NewReader(bytes.NewReader(concat(readyIdle, query))), inspect, nil)
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("forward returned %v, want io.EOF", err)
 	}
@@ -110,6 +112,37 @@ func TestForwardSendsHeldBytesBeforeInspect(t *testing.T) {
 		t.Errorf("inspect saw %q, want the query %q", inspected, query)
 	}
 	expectWrite(t, rec, query)
+}
+
+// sentReady tells the scheduler a step finished, and the scheduler may then
+// take a while, so it must only run once the ReadyForQuery has reached the app:
+// nothing may be held back while it runs. A reply is still sent in one Write,
+// because ReadyForQuery is the last message of a reply anyway.
+func TestForwardReportsReadyAfterSendingIt(t *testing.T) {
+	rec := make(writeRecorder, 10)
+	var statuses []byte
+	sentReady := func(m pgwire.Message) {
+		statuses = append(statuses, m.Body[0])
+		select {
+		case got := <-rec:
+			want := concat(commandComplete, m.Raw)
+			if !bytes.Equal(got, want) {
+				t.Errorf("before reporting %q, wrote %q, want the whole reply %q", m.Raw, got, want)
+			}
+		default:
+			t.Errorf("sentReady(%q) was called while the message was still held back", m.Raw)
+		}
+	}
+
+	// Two replies that arrived together.
+	burst := concat(commandComplete, readyInTx, commandComplete, readyIdle)
+	err := forward(rec, bufio.NewReader(bytes.NewReader(burst)), nil, sentReady)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("forward returned %v, want io.EOF", err)
+	}
+	if string(statuses) != "TI" {
+		t.Errorf("sentReady saw statuses %q, want %q", statuses, "TI")
+	}
 }
 
 func expectWrite(t *testing.T, rec writeRecorder, want []byte) {

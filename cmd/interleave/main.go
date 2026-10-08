@@ -64,7 +64,10 @@ func runProxy(args []string) int {
 		return exitUsage
 	}
 	if *verbose {
-		p.OnQuery = func(tag, sql string) { log.Print(queryLogLine(tag, sql)) }
+		p.OnQuery = func(_ context.Context, tag, sql string) func(byte) {
+			log.Print(queryLogLine(tag, sql))
+			return nil
+		}
 	}
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {

@@ -104,7 +104,10 @@ func TestOnQueryReportsTags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.OnQuery = func(tag, sql string) { queries <- seen{tag, sql} }
+	p.OnQuery = func(_ context.Context, tag, sql string) func(byte) {
+		queries <- seen{tag, sql}
+		return nil
+	}
 	client := dial(t, serveProxy(t, p))
 
 	write(t, client, startupMsg)
@@ -145,6 +148,134 @@ func TestOnQueryReportsTags(t *testing.T) {
 		t.Errorf("OnQuery called for a non-Query message: %+v", got)
 	default:
 	}
+}
+
+// Each query's done func is called with the status of that query's own
+// ReadyForQuery (FR-5). The ReadyForQuery that ends startup belongs to no
+// query, and a query whose OnQuery returned nil still uses up its reply.
+func TestDoneGetsEachQuerysReadyStatus(t *testing.T) {
+	type finished struct {
+		sql    string
+		status byte
+	}
+	finishes := make(chan finished, 10)
+	upstreamAddr, accepted := fakeUpstream(t)
+	p, err := New(upstreamAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.OnQuery = func(_ context.Context, tag, sql string) func(byte) {
+		if tag == "" {
+			return nil // like the scheduler: untagged queries are not steps (D-016)
+		}
+		return func(status byte) { finishes <- finished{sql, status} }
+	}
+	client := dial(t, serveProxy(t, p))
+
+	write(t, client, startupMsg)
+	server := acceptOne(t, accepted)
+	if _, err := pgwire.ReadStartup(server); err != nil {
+		t.Fatalf("upstream reading startup: %v", err)
+	}
+	write(t, server, authOKReady)
+	expectBytes(t, client, authOKReady)
+
+	steps := []struct {
+		sql    string
+		reply  []byte // what fake Postgres answers
+		finish *finished
+	}{
+		{"/* il:req=A */ BEGIN", concat(commandComplete, readyInTx), &finished{"/* il:req=A */ BEGIN", 'T'}},
+		{"SELECT 1", concat(commandComplete, readyInTx), nil},
+		{"/* il:req=A */ COMMIT", concat(commandComplete, readyIdle), &finished{"/* il:req=A */ COMMIT", 'I'}},
+	}
+	for _, s := range steps {
+		write(t, client, queryMsg(s.sql))
+		expectBytes(t, server, queryMsg(s.sql))
+		write(t, server, s.reply)
+		expectBytes(t, client, s.reply)
+		if s.finish == nil {
+			continue
+		}
+		select {
+		case got := <-finishes:
+			if got != *s.finish {
+				t.Errorf("done got %q %q, want %q %q", got.sql, got.status, s.finish.sql, s.finish.status)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("done never called for %q", s.sql)
+		}
+	}
+
+	// Two queries sent before either reply (pipelining): the first reply
+	// belongs to the untagged query, so B's done must get the second status.
+	untagged, tagged := queryMsg("SELECT 1"), queryMsg("/* il:req=B */ SELECT 2")
+	write(t, client, concat(untagged, tagged))
+	expectBytes(t, server, concat(untagged, tagged))
+	replies := concat(commandComplete, readyInTx, commandComplete, readyIdle)
+	write(t, server, replies)
+	expectBytes(t, client, replies)
+	select {
+	case got := <-finishes:
+		if want := (finished{"/* il:req=B */ SELECT 2", 'I'}); got != want {
+			t.Errorf("pipelined: done got %q %q, want %q %q", got.sql, got.status, want.sql, want.status)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pipelined: done never called for B")
+	}
+
+	select {
+	case got := <-finishes:
+		t.Errorf("unexpected extra done call: %q %q", got.sql, got.status)
+	default:
+	}
+}
+
+// A parked query waits inside OnQuery. Shutting the proxy down must cancel
+// OnQuery's ctx so the query gives up, or Serve could never return.
+func TestShutdownReleasesParkedQuery(t *testing.T) {
+	upstreamAddr, accepted := fakeUpstream(t)
+	p, err := New(upstreamAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked := make(chan struct{})
+	p.OnQuery = func(ctx context.Context, _, _ string) func(byte) {
+		close(parked)
+		<-ctx.Done() // never released: only cancellation ends the wait
+		return nil
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Serve(ctx, ln) }()
+
+	client := dial(t, ln.Addr().String())
+	write(t, client, startupMsg)
+	server := acceptOne(t, accepted)
+	if _, err := pgwire.ReadStartup(server); err != nil {
+		t.Fatalf("upstream reading startup: %v", err)
+	}
+	write(t, client, queryMsg("/* il:req=A */ SELECT 1"))
+	select {
+	case <-parked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnQuery was never called")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Serve returned %v, want nil after cancel", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return within 5s of cancel while a query was parked")
+	}
+	expectEOF(t, client)
 }
 
 // queryMsg builds a 'Q' Query message: type, length (4 + text + NUL), text, NUL.

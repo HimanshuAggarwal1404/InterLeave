@@ -163,7 +163,10 @@ func poolViaProxy(t *testing.T, onQuery func(tag, sql string)) *pgxpool.Pool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.OnQuery = onQuery
+	p.OnQuery = func(_ context.Context, tag, sql string) func(byte) {
+		onQuery(tag, sql)
+		return nil
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

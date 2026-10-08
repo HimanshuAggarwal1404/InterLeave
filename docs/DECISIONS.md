@@ -199,18 +199,26 @@ while ReadyForQuery says `T`/`E`; works for ORMs, but more proxy state and edge 
 Consequences: Simplest rule; the kill test only needs tagged SELECT/UPDATE/INSERT/COMMIT. The
 explorer cannot choose when a ROLLBACK runs. Revisit (tag inheritance) for ORM apps in Phase 4.
 
-## D-017: Proxy reports queries through a callback, `Proxy.OnQuery(tag, sql)`, before forwarding
-Status: Proposed      Date: 2026-10-04
-Context: The proxy now knows each query's request tag (D-015). Something outside the proxy (today
-`--verbose` logging and tests, next the scheduler) must see each query, and the scheduler must be
-able to hold it.
-Decision: An optional function field on `Proxy`, called on the app→Postgres goroutine for every
-`Q` message before it is forwarded. If it blocks, that connection's query waits (parking); per
-D-014 the proxy first sends any bytes it is holding. Nil means pure forwarding, no parsing cost.
-Alternatives: a channel of query events (cannot hold a query without an extra reply channel);
-an interface type (more ceremony for one method).
-Consequences: Small and easy to test. Not final: the proxy↔sched interface (also "step done" on
-ReadyForQuery, FR-5) is to be agreed before `sched` is written.
+## D-017: Proxy↔sched interface: `OnQuery(ctx, tag, sql)` parks a query and returns its `done`
+Status: Accepted      Date: 2026-10-04 (completion added 2026-10-09)
+Context: The proxy knows each query's request tag (D-015). The scheduler must see each query, be
+able to hold it, and learn when Postgres has finished it (ReadyForQuery `Z`, FR-5).
+Decision: An optional function field `OnQuery func(ctx, tag, sql) (done func(status byte))`,
+called on the app→Postgres goroutine for every `Q` before it is forwarded (after flushing held
+bytes, D-014). Blocking in it parks the query. ctx is cancelled when the connection is torn down
+or the proxy shuts down. The returned `done` (nil allowed) goes into a per-connection FIFO
+channel; when the postgres→app goroutine has sent a `Z` to the app, it pops the oldest entry and
+calls it with the status byte. A `Z` with an empty queue (end of startup, extended-protocol Sync)
+belongs to no query and is skipped. Nil `OnQuery` means pure forwarding, no parsing cost.
+Alternatives: a second callback `OnReady(tag, status)` (sched must match completions to steps by
+tag; ambiguous if a request uses two connections; proxy needs a mutex-guarded "last tag" per
+connection); a two-method interface (same pairing problem, more ceremony); a channel of query
+events (cannot hold a query without an extra reply channel).
+Consequences: Each step is paired with its own completion, so `sched` never maps tags to
+connections. Every `Q` queues an entry, even a nil one, or pipelined replies would pair with the
+wrong query. `done` runs on the connection's postgres→app goroutine, so it must not block
+for long (send to sched with a `select` on ctx). If a connection dies mid-step, `done` is never
+called; the run timeout covers that.
 
 ## D-018: Project renamed from RaceHound to Interleave
 Status: Accepted      Date: 2026-10-08

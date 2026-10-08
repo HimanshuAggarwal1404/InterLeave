@@ -9,14 +9,14 @@ never estimate. These numbers feed the README and resume bullets, so they must b
 ## Pass-through overhead (Phase 1)
 | Date | Commit | Requests/sec direct | Requests/sec via proxy | Overhead | Command |
 |---|---|---|---|---|---|
-| 2026-10-04 (run 1, setups one after the other) | f67f182 (proxy); first version of `cmd/bench`, committed in af4f09b | 20766.9 median (18593.0-22885.4) | 11346.1 median (10628.9-12039.0) | 45.4% fewer req/s; p50 577µs → 1.259ms | `go run ./cmd/bench` (defaults: 16 workers, 3s warmup, 3 x 10s) |
-| 2026-10-04 (run 2, alternating), old proxy | f67f182 (`bin/interleave-old.exe`) | 17575.1 median (15273.1-23735.2) | 9414.3 median (8627.7-10889.9) | 46.4% fewer req/s; p50 695.5µs → 1.673ms | `go run ./cmd/bench --rounds 4 http://localhost:8081/redeem http://localhost:8082/redeem http://localhost:8083/redeem` (old proxy = 8082) |
-| 2026-10-04 (run 2, alternating), new proxy | af4f09b (write batching) | same run as above | 11348.4 median (10644.5-11716.6) | 35.4% fewer req/s; p50 695.5µs → 1.223ms | same command as above (new proxy = 8083) |
+| 2026-10-04 (run 1, setups one after the other) | f3b9be1 (proxy); first version of `cmd/bench`, committed in fd9fddb | 20766.9 median (18593.0-22885.4) | 11346.1 median (10628.9-12039.0) | 45.4% fewer req/s; p50 577µs → 1.259ms | `go run ./cmd/bench` (defaults: 16 workers, 3s warmup, 3 x 10s) |
+| 2026-10-04 (run 2, alternating), old proxy | f3b9be1 (`bin/interleave-old.exe`) | 17575.1 median (15273.1-23735.2) | 9414.3 median (8627.7-10889.9) | 46.4% fewer req/s; p50 695.5µs → 1.673ms | `go run ./cmd/bench --rounds 4 http://localhost:8081/redeem http://localhost:8082/redeem http://localhost:8083/redeem` (old proxy = 8082) |
+| 2026-10-04 (run 2, alternating), new proxy | fd9fddb (write batching) | same run as above | 11348.4 median (10644.5-11716.6) | 35.4% fewer req/s; p50 695.5µs → 1.223ms | same command as above (new proxy = 8083) |
 
 ### Before/after: write batching in the proxy (old vs new, run 2)
 
-Date: 2026-10-04. Before = commit f67f182 (one `Write` per message). After = write batching,
-**af4f09b**. Both proxies and
+Date: 2026-10-04. Before = commit f3b9be1 (one `Write` per message). After = write batching,
+**fd9fddb**. Both proxies and
 the direct app ran at the same time and were measured in alternating order, so they share
 conditions. Direct baseline in the same run: 17575.1 req/s, p50 695.5 µs.
 
@@ -39,7 +39,7 @@ because direct swung between 15.3k and 23.7k req/s across rounds (see notes belo
 2026-10-04 run 2 notes:
 - Command: `go run ./cmd/bench --rounds 4 http://localhost:8081/redeem http://localhost:8082/redeem
   http://localhost:8083/redeem`. A = app direct (:5432), B = app via old proxy
-  (`bin/interleave-old.exe proxy --listen localhost:6434`, built from f67f182), C = app via new proxy
+  (`bin/interleave-old.exe proxy --listen localhost:6434`, built from f3b9be1), C = app via new proxy
   (`go run ./cmd/interleave proxy`, :6433). All 5 processes ran at once; each round measured A, B, C
   for 10s each, order alternating (ABC, CBA, ABC, CBA). 0 errors. Same workload as run 1.
 - p50 values are the median of the 4 rounds' p50s.
@@ -86,7 +86,7 @@ redo with a fixed number of rounds per trial before quoting it.
 ## Optimisations (Phase 3)
 | Date | Commit | Optimisation | Metric | Before | After |
 |---|---|---|---|---|---|
-| 2026-10-04 | before f67f182, after af4f09b | Proxy write batching: send messages that arrived together in one `Write` (done in Phase 1, D-014) | req/s through proxy, coupon 409 path, median of 4 alternating rounds | 9414.3 | 11348.4 (+20.5%; faster in 4/4 rounds) |
+| 2026-10-04 | before f3b9be1, after fd9fddb | Proxy write batching: send messages that arrived together in one `Write` (done in Phase 1, D-014) | req/s through proxy, coupon 409 path, median of 4 alternating rounds | 9414.3 | 11348.4 (+20.5%; faster in 4/4 rounds) |
 | 2026-10-04 | same | same | p50 latency the proxy adds per request (vs direct, same run) | 0.98 ms | 0.53 ms |
 
 Command for both rows: `go run ./cmd/bench --rounds 4 http://localhost:8081/redeem

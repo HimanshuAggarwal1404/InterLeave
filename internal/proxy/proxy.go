@@ -1,5 +1,6 @@
 // Package proxy sits between an app and Postgres and forwards the wire protocol.
-// For now it is a pure pass-through: every message is forwarded unchanged.
+// Every message is forwarded unchanged; an optional hook sees each simple
+// Query (and may hold it) and hears when Postgres has finished it.
 package proxy
 
 import (
@@ -24,8 +25,22 @@ type Proxy struct {
 	// the query is forwarded, with its request tag ("" if untagged, D-015) and
 	// SQL text. It runs on each connection's own goroutine, so calls for
 	// different connections can happen at the same time. Set it before Serve.
-	OnQuery func(tag, sql string)
+	//
+	// While OnQuery blocks, the query waits (it is parked). ctx is cancelled
+	// when the connection is torn down or the proxy shuts down; a blocked
+	// OnQuery must then return, or Serve cannot finish.
+	//
+	// If OnQuery returns a done func, the proxy calls it once Postgres has
+	// finished that query, that is once its ReadyForQuery has been sent on to
+	// the app, with the ReadyForQuery status byte ('I', 'T' or 'E'). It is not
+	// called if the connection ends first. Return nil to skip it.
+	OnQuery func(ctx context.Context, tag, sql string) (done func(status byte))
 }
+
+// maxPending is how many finished-callbacks one connection can queue. Apps
+// using the simple protocol wait for each reply before the next Query, so
+// one is normally enough; if an app sends more, the extra Query waits here.
+const maxPending = 16
 
 // New returns a proxy that forwards to upstream ("host:port"). The host must
 // be this machine: Interleave only ever talks to the local Postgres.
@@ -105,44 +120,79 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	}
 
 	// Two pumps, one per direction. Whichever stops first closes both
-	// connections, which makes the other one's blocked read fail and stop too.
+	// connections, which makes the other one's blocked read fail and stop too,
+	// and cancels connCtx, which un-parks a query waiting in OnQuery.
+	connCtx, cancelConn := context.WithCancel(ctx)
+	defer cancelConn()
 	serverR := bufio.NewReader(server)
 	closeBoth := func() {
+		cancelConn()
 		client.Close()
 		server.Close()
 	}
-	var inspect func(pgwire.Message) // nil: nothing to look at, pure forwarding
+	var inspect, sentReady func(pgwire.Message) // nil: nothing to look at, pure forwarding
 	if p.OnQuery != nil {
-		inspect = func(m pgwire.Message) { p.inspectQuery(client, m) }
+		// One done func per forwarded Query, oldest first. Postgres answers a
+		// connection's queries in order, one ReadyForQuery each, so the next
+		// ReadyForQuery always belongs to the oldest entry.
+		pending := make(chan func(byte), maxPending)
+		inspect = func(m pgwire.Message) { p.inspectQuery(connCtx, client, m, pending) }
+		sentReady = func(m pgwire.Message) { reportReady(client, m, pending) }
 	}
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		defer closeBoth()
-		logUnlessClosed(client, "app→postgres", forward(server, clientR, inspect))
+		logUnlessClosed(client, "app→postgres", forward(server, clientR, inspect, nil))
 	})
 	wg.Go(func() {
 		defer closeBoth()
-		logUnlessClosed(client, "postgres→app", forward(client, serverR, nil))
+		logUnlessClosed(client, "postgres→app", forward(client, serverR, nil, sentReady))
 	})
 	wg.Wait()
 }
 
-// inspectQuery reports a Query message to OnQuery. Anything wrong with it is
-// logged, not fatal: the message is forwarded anyway and Postgres judges it.
-func (p *Proxy) inspectQuery(client net.Conn, m pgwire.Message) {
+// inspectQuery reports a Query message to OnQuery and queues the done func it
+// returns. Anything wrong with the message is logged, not fatal: it is
+// forwarded anyway and Postgres judges it.
+func (p *Proxy) inspectQuery(ctx context.Context, client net.Conn, m pgwire.Message, pending chan<- func(byte)) {
 	if m.Type != 'Q' {
 		return
 	}
-	sql, err := pgwire.QueryString(m)
+	var done func(byte)
+	if sql, err := pgwire.QueryString(m); err != nil {
+		log.Printf("proxy: %s: %v", client.RemoteAddr(), err)
+	} else {
+		tag, err := requestTag(sql)
+		if err != nil {
+			log.Printf("proxy: %s: %v (treated as untagged)", client.RemoteAddr(), err)
+		}
+		done = p.OnQuery(ctx, tag, sql)
+	}
+	// Queue even a nil done: this Query still gets a ReadyForQuery, and
+	// skipping it would pair every later reply with the wrong query. This
+	// runs before the Query is forwarded, so its reply cannot beat it here.
+	select {
+	case pending <- done:
+	case <-ctx.Done():
+	}
+}
+
+// reportReady hands a ReadyForQuery's status to the oldest queued done func.
+// If nothing is queued, the ReadyForQuery answers no Query of ours: it is the
+// one that ends startup, or it ends an extended-protocol Sync (FR-6).
+func reportReady(client net.Conn, m pgwire.Message, pending <-chan func(byte)) {
+	status, err := pgwire.ReadyStatus(m)
 	if err != nil {
 		log.Printf("proxy: %s: %v", client.RemoteAddr(), err)
 		return
 	}
-	tag, err := requestTag(sql)
-	if err != nil {
-		log.Printf("proxy: %s: %v (treated as untagged)", client.RemoteAddr(), err)
+	select {
+	case done := <-pending:
+		if done != nil {
+			done(status)
+		}
+	default:
 	}
-	p.OnQuery(tag, sql)
 }
 
 // readStartup reads startup packets until one is not an encryption request.
@@ -176,7 +226,11 @@ func readStartup(client net.Conn, r *bufio.Reader) (pgwire.Startup, error) {
 // If inspect is not nil it sees every message before the message is
 // forwarded. inspect may block (a parked query waits there), so by the same
 // rule anything held back is sent before inspect is called.
-func forward(dst io.Writer, src *bufio.Reader, inspect func(pgwire.Message)) error {
+//
+// If sentReady is not nil it sees every ReadyForQuery ('Z') once that message
+// has been sent, so it too runs with nothing held back. This costs no extra
+// Write in practice: ReadyForQuery is the last message of a reply.
+func forward(dst io.Writer, src *bufio.Reader, inspect, sentReady func(pgwire.Message)) error {
 	w := bufio.NewWriterSize(dst, 64*1024)
 	for {
 		m, err := pgwire.ReadMessage(src)
@@ -194,10 +248,14 @@ func forward(dst io.Writer, src *bufio.Reader, inspect func(pgwire.Message)) err
 		if _, err := w.Write(m.Raw); err != nil {
 			return err
 		}
-		if !hasCompleteMessage(src) {
+		report := sentReady != nil && m.Type == 'Z'
+		if report || !hasCompleteMessage(src) {
 			if err := w.Flush(); err != nil {
 				return err
 			}
+		}
+		if report {
+			sentReady(m)
 		}
 	}
 }
