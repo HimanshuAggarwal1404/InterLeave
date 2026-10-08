@@ -1,4 +1,4 @@
-# RaceHound: Results
+# Interleave: Results
 
 Measured numbers only. Every entry: date, git commit, machine, exact command. Never round up,
 never estimate. These numbers feed the README and resume bullets, so they must be reproducible.
@@ -10,7 +10,7 @@ never estimate. These numbers feed the README and resume bullets, so they must b
 | Date | Commit | Requests/sec direct | Requests/sec via proxy | Overhead | Command |
 |---|---|---|---|---|---|
 | 2026-10-04 (run 1, setups one after the other) | f67f182 (proxy); first version of `cmd/bench`, committed in af4f09b | 20766.9 median (18593.0-22885.4) | 11346.1 median (10628.9-12039.0) | 45.4% fewer req/s; p50 577µs → 1.259ms | `go run ./cmd/bench` (defaults: 16 workers, 3s warmup, 3 x 10s) |
-| 2026-10-04 (run 2, alternating), old proxy | f67f182 (`bin/racehound-old.exe`) | 17575.1 median (15273.1-23735.2) | 9414.3 median (8627.7-10889.9) | 46.4% fewer req/s; p50 695.5µs → 1.673ms | `go run ./cmd/bench --rounds 4 http://localhost:8081/redeem http://localhost:8082/redeem http://localhost:8083/redeem` (old proxy = 8082) |
+| 2026-10-04 (run 2, alternating), old proxy | f67f182 (`bin/interleave-old.exe`) | 17575.1 median (15273.1-23735.2) | 9414.3 median (8627.7-10889.9) | 46.4% fewer req/s; p50 695.5µs → 1.673ms | `go run ./cmd/bench --rounds 4 http://localhost:8081/redeem http://localhost:8082/redeem http://localhost:8083/redeem` (old proxy = 8082) |
 | 2026-10-04 (run 2, alternating), new proxy | af4f09b (write batching) | same run as above | 11348.4 median (10644.5-11716.6) | 35.4% fewer req/s; p50 695.5µs → 1.223ms | same command as above (new proxy = 8083) |
 
 ### Before/after: write batching in the proxy (old vs new, run 2)
@@ -39,8 +39,8 @@ because direct swung between 15.3k and 23.7k req/s across rounds (see notes belo
 2026-10-04 run 2 notes:
 - Command: `go run ./cmd/bench --rounds 4 http://localhost:8081/redeem http://localhost:8082/redeem
   http://localhost:8083/redeem`. A = app direct (:5432), B = app via old proxy
-  (`bin/racehound-old.exe proxy --listen localhost:6434`, built from f67f182), C = app via new proxy
-  (`go run ./cmd/racehound proxy`, :6433). All 5 processes ran at once; each round measured A, B, C
+  (`bin/interleave-old.exe proxy --listen localhost:6434`, built from f67f182), C = app via new proxy
+  (`go run ./cmd/interleave proxy`, :6433). All 5 processes ran at once; each round measured A, B, C
   for 10s each, order alternating (ABC, CBA, ABC, CBA). 0 errors. Same workload as run 1.
 - p50 values are the median of the 4 rounds' p50s.
 - New vs old proxy, same round (they always ran next to each other): +7.6%, +17.0%, +24.2%, +23.4%
@@ -55,7 +55,7 @@ because direct swung between 15.3k and 23.7k req/s across rounds (see notes belo
 2026-10-04 run 1 notes:
 - Workload: coupon app, DB reset with `seed.sql`, so every measured request is a 409 (BEGIN,
   SELECT, ROLLBACK = 3 round trips, no locks). Direct: app `--dsn` on :5432. Via proxy:
-  `go run ./cmd/racehound proxy` + app with default DSN (:6433). 0 errors in both. The bench, app,
+  `go run ./cmd/interleave proxy` + app with default DSN (:6433). 0 errors in both. The bench, app,
   proxy and Postgres all ran on the same laptop.
 - The ranges do not overlap (direct min 18593.0 > proxy max 12039.0), so the gap is real.
   Median p50 latency went up by ~0.68 ms per request, i.e. ~0.23 ms per round trip.

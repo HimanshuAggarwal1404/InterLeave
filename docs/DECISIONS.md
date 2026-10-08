@@ -1,4 +1,4 @@
-# RaceHound: Design Decisions
+# Interleave: Design Decisions
 
 A log of design choices: what we chose, what else we considered, and why.
 This doubles as interview preparation: every entry is an answer to "why did you do it this way?"
@@ -20,7 +20,7 @@ Consequences: <what this makes easy, what it makes hard, what to revisit later>
 
 ---
 
-## D-001: Implement RaceHound in Go
+## D-001: Implement Interleave in Go
 Status: Accepted      Date: 2026-10-03
 Context: Need a network proxy handling many connections plus a central scheduler.
 Decision: Go.
@@ -32,7 +32,7 @@ signal". Static binary. Cost: 1-2 weeks learning Go. Fallback: if Go learning ex
 
 ## D-002: Intercept at the Postgres wire protocol (proxy), not inside the app
 Status: Accepted      Date: 2026-10-03
-Context: RaceHound must control the order of SQL statements from concurrent requests.
+Context: Interleave must control the order of SQL statements from concurrent requests.
 Decision: A TCP proxy speaking the Postgres protocol between app and database.
 Alternatives: Instrumenting the DB driver or ORM (language-specific, one integration per stack);
 instrumenting app code (invasive); database-side hooks or extensions (hard to control ordering,
@@ -54,7 +54,7 @@ Consequences: Fast path to the kill test. Real apps need extended support (Phase
 Status: Accepted      Date: 2026-10-03
 Context: Connection pools reuse connections across requests, so "connection" is not a stable
 identity across runs; replaying a schedule needs stable identities.
-Decision: Harness sends header X-RaceHound-Req; the app prefixes queries with /* rh:req=X */.
+Decision: Harness sends header X-Interleave-Req; the app prefixes queries with /* il:req=X */.
 Untagged statements pass through unscheduled.
 Alternatives: Schedule per connection (simplest, but pool assignment can differ between runs and
 break replay); force one connection per request (changes app behaviour).
@@ -112,20 +112,20 @@ Status: Accepted      Date: 2026-10-03
 Context: Development is on Windows. Docker Desktop needs WSL2/virtualisation, uses a lot of RAM,
 and adds a VM network hop between proxy and database.
 Decision: PostgreSQL 18.6 installed natively as a Windows service on localhost:5432 (role and
-database `racehound`, role has CREATEDB). `docker-compose.yml` stays, for other people and the Phase 5 demo.
+database `interleave`, role has CREATEDB). `docker-compose.yml` stays, for other people and the Phase 5 demo.
 Everything runs natively on Windows (no WSL2); shell scripts run through Git Bash.
 Alternatives: Docker Compose (disposable, version-pinned and identical for everyone, but heavier
 on this laptop); WSL2 Postgres (still a VM, and localhost forwarding adds a hop).
 Consequences: Lighter, always on, and timing measurements are free of Docker/VM networking noise.
 Costs: the DB persists (reset relies on seed SQL, D-005); the server is shared machine-wide, so
-tests and tools must only touch `racehound` and DBs RaceHound creates; the local version (18) differs from
+tests and tools must only touch `interleave` and DBs Interleave creates; the local version (18) differs from
 compose (17), so bump compose to 18 before the demo. Postgres 18 brings protocol 3.2 (see ARCHITECTURE.md section 8).
 
-## D-011: Plain Go module path `racehound` (no GitHub path yet)
+## D-011: Plain Go module path `interleave` (no GitHub path yet)
 Status: Accepted      Date: 2026-10-03
 Context: `go mod init` needs a module path; the usual form is github.com/<user>/<repo>.
-Decision: Use `racehound`. Imports look like `racehound/internal/proxy`.
-Alternatives: github.com/<username>/racehound (ties the project to a GitHub account before
+Decision: Use `interleave`. Imports look like `interleave/internal/proxy`.
+Alternatives: github.com/<username>/interleave (ties the project to a GitHub account before
 the project is published).
 Consequences: Builds and tests work the same. When publishing, rename the module path in go.mod
 and imports (one find-and-replace) so others can `go install` it.
@@ -175,16 +175,16 @@ rule when it starts parsing `Q` messages in the same loop.
 
 ## D-015: Request tag only at the very start of the query; tag is 1-64 of A-Z a-z 0-9 _ -
 Status: Accepted      Date: 2026-10-04
-Context: The proxy must find `/* rh:req=X */` (D-004) in each Query. Where may it appear, and
+Context: The proxy must find `/* il:req=X */` (D-004) in each Query. Where may it appear, and
 what may X contain?
 Decision: Only as the first thing in the query (leading whitespace and spaces inside the comment
 allowed). X is 1-64 characters of `A-Z a-z 0-9 _ -`. A query that starts with our comment but
 has a broken one (unclosed, bad characters) is logged and treated as untagged.
 Alternatives: anywhere in the query (text inside a string value, e.g. a user name
-`'/* rh:req=A */'`, would pose as a tag unless we parse SQL quoting); start or end (also covers
+`'/* il:req=A */'`, would pose as a tag unless we parse SQL quoting); start or end (also covers
 sqlcommenter, which puts comments at the end; more code, not needed for our victims).
 Consequences: Strict, simple and cannot be fooled by data. Apps using sqlcommenter (Phase 4) need
-this revisited. Victim apps validate the X-RaceHound-Req header with the same rule, because the
+this revisited. Victim apps validate the X-Interleave-Req header with the same rule, because the
 tag is pasted into SQL (otherwise SQL injection).
 
 ## D-016: Statements the app cannot tag pass through unscheduled (incl. pgx's ROLLBACK)
@@ -211,3 +211,14 @@ Alternatives: a channel of query events (cannot hold a query without an extra re
 an interface type (more ceremony for one method).
 Consequences: Small and easy to test. Not final: the proxy↔sched interface (also "step done" on
 ReadyForQuery, FR-5) is to be agreed before `sched` is written.
+
+## D-018: Project renamed from RaceHound to Interleave
+Status: Accepted      Date: 2026-10-08
+Context: the project needed a new name.
+Decision: Rename everywhere: Go module `interleave`, command `cmd/interleave`, header
+`X-Interleave-Req`, request tag `/* il:req=X */` (was `rh:req`), env var `INTERLEAVE_TEST_DSN`,
+results dir `.interleave/`, docker-compose names, Postgres role/password/database `interleave`, docs.
+Alternatives: keep the Postgres role/database as `racehound` (nothing breaks, but one old name stays).
+Consequences: the Postgres role and database are renamed by hand; until then
+`TestRealPostgres` fails with an auth error. The project folder `D:\RaceHound` is renamed by hand.
+Earlier entries and the session log were rewritten to use the new name.

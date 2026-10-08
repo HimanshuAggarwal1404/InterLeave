@@ -1,7 +1,7 @@
 
-# RaceHound
+# Interleave
 
-RaceHound finds race conditions in web apps that use Postgres. It is a command-line testing tool
+Interleave finds race conditions in web apps that use Postgres. It is a command-line testing tool
 (like `go test`), not a website.
 
 > **Status:** Phase 0 done. Phase 1 in progress: `pgwire` and the pass-through proxy are done. This README explains, in plain words, everything that
@@ -25,8 +25,8 @@ This is a **race condition**: the result depends on the *order* in which two req
 happen to run. It is hard to catch because almost every order is fine. Only an unlucky one
 breaks, so normal tests pass and the bug shows up in production on a busy day.
 
-**What RaceHound will do about it.** It sits between the app and Postgres like a traffic
-policeman. Every SQL statement from the concurrent requests is held at a red light. RaceHound
+**What Interleave will do about it.** It sits between the app and Postgres like a traffic
+policeman. Every SQL statement from the concurrent requests is held at a red light. Interleave
 then lets them through **in an order it chooses**, checks afterwards whether a rule was broken
 (for example "uses must never exceed max_uses"), resets the database, and tries the next order.
 In the end it says either "safe in all N orders" or "this exact order breaks the rule", and can
@@ -43,7 +43,7 @@ replay that order on demand. Instead of hoping to get unlucky, it tries every or
 | 3 | Phase 0 exit test | A test proving the bug is real, by hammering the app with 50 requests at once | `victims/coupon/main_test.go` |
 | 4 | `pgwire` (Phase 1, step 1) | Code that cuts the raw bytes between an app and Postgres into individual messages | `internal/pgwire/` |
 | 5 | Pass-through proxy (Phase 1, step 2) | Sits between the app and Postgres and forwards every message unchanged | `internal/proxy/` |
-| 6 | `racehound proxy` command | Runs the proxy from the terminal on port 6433 | `cmd/racehound/` |
+| 6 | `interleave proxy` command | Runs the proxy from the terminal on port 6433 | `cmd/interleave/` |
 | 7 | Overhead benchmark | Measures requests/sec with and without the proxy (results in `docs/RESULTS.md`) | `cmd/bench/` |
 | 8 | Request tags (Phase 1, step 3) | Each statement says which HTTP request it belongs to; the proxy reads it | `internal/proxy/tag.go`, `victims/coupon/` |
 | 9 | Project docs | Spec, architecture, roadmap, decisions, overview, results | `docs/` |
@@ -55,7 +55,7 @@ but it still passes everything straight through, without holding anything back.
 
 ### 2. The coupon victim app (`victims/coupon/`)
 
-A "victim" is a small app that is buggy on purpose, so RaceHound has something to find. Its files:
+A "victim" is a small app that is buggy on purpose, so Interleave has something to find. Its files:
 
 - `main.go`: a web server with one endpoint, `POST /redeem`, taking `{"code": "DIWALI50", "user_id": 1}`.
   Inside a transaction it runs:
@@ -75,19 +75,19 @@ uses the **READ COMMITTED** isolation level, where a plain `SELECT` takes no loc
 read the row while request A is still between its check and its update. Both see `uses = 0`.
 
 **The fix** (not applied, because the bug is the point): `SELECT ... FOR UPDATE` locks the row,
-so B has to wait until A commits, and then sees `uses = 1`. Later, RaceHound must show the buggy
+so B has to wait until A commits, and then sees `uses = 1`. Later, Interleave must show the buggy
 version breaks in some order and the fixed version holds in **every** order. That before/after
 proof is the product.
 
-**How it connects to Postgres:** by default to port **6433**, where RaceHound's proxy listens
-(start it with `racehound proxy`, see "Try it yourself" Step 6). Pass `--dsn` with port
+**How it connects to Postgres:** by default to port **6433**, where Interleave's proxy listens
+(start it with `interleave proxy`, see "Try it yourself" Step 6). Pass `--dsn` with port
 **5432** to skip the proxy and talk to Postgres directly. The connection string also has `default_query_exec_mode=simple_protocol`; see
 "Simple vs extended protocol" in the glossary for why.
 
 ### 3. The Phase 0 exit test (`TestRaceIsReal`)
 
 Each phase of the roadmap ends with an "exit test" that must pass before moving on. Phase 0's
-question: *is the bug real, without any RaceHound magic?*
+question: *is the bug real, without any Interleave magic?*
 
 What the test does, round by round (up to 20 rounds):
 1. Run `seed.sql`, so the coupon is fresh (`uses = 0`, `max_uses = 1`).
@@ -105,7 +105,7 @@ main_test.go:40: round 2: single-use coupon redeemed 4 times (4 redemption rows)
 It usually triggers in round 2. In round 1 the app is still opening database connections, which
 spreads the requests out in time.
 
-This "blast it and hope" approach is exactly what RaceHound replaces: it is luck-based, and when
+This "blast it and hope" approach is exactly what Interleave replaces: it is luck-based, and when
 it fails it tells you nothing about *which* order caused the bug.
 
 ### 4. `pgwire`: reading the Postgres language (`internal/pgwire/`)
@@ -157,28 +157,28 @@ for messages, over 10,000 bytes for startup packets, the same limits Postgres us
 
 **Where the test bytes came from.** The tests use real bytes captured on this machine. A
 throwaway program pretended to be a server, `psql` connected to it, and it recorded what
-`psql` sent (an SSLRequest, then a StartupMessage with `user=racehound database=racehound
+`psql` sent (an SSLRequest, then a StartupMessage with `user=interleave database=interleave
 application_name=psql`). It also recorded Postgres 18.6's first reply: an `R` message saying
-"prove your password with SCRAM-SHA-256". The other test messages are built by hand from the
+"prove your password with SCRAM-SHA-256". The other te st messages are built by hand from the
 official protocol docs, with a comment on each explaining every byte.
 
 **The Postgres 18 gotcha.** In protocol 3.2 the `K` message (server process ID + secret key) can
 have a key up to 256 bytes instead of always 4. Code that assumes "`K` is always 12 bytes" breaks.
 `pgwire` never assumes sizes; it always trusts the length field, and a test checks this.
 
-### 5. The pass-through proxy (`internal/proxy/`, `cmd/racehound/`)
+### 5. The pass-through proxy (`internal/proxy/`, `cmd/interleave/`)
 
 The proxy is a middleman. The app thinks it is talking to Postgres, but it is talking to
-RaceHound on port 6433, which passes everything on to the real Postgres on 5432 and passes the
+Interleave on port 6433, which passes everything on to the real Postgres on 5432 and passes the
 answers back:
 
 ```
-coupon app ──► racehound proxy (localhost:6433) ──► Postgres (localhost:5432)
+coupon app ──► interleave proxy (localhost:6433) ──► Postgres (localhost:5432)
            ◄──                                  ◄──
 ```
 
 Right now it changes nothing; it is "pass-through". That is the point of this step: before
-RaceHound holds statements back, it must prove it can sit in the middle without breaking
+Interleave holds statements back, it must prove it can sit in the middle without breaking
 anything. Later, the "hold at the red light" logic goes inside it.
 
 **What happens when an app connects:**
@@ -208,7 +208,7 @@ is left running. The tests check this.
 
 **Safety, built into the code:**
 - It only forwards to **this machine** (`localhost`, `127.0.0.1` or `::1`). Any other upstream
-  address is refused with an error, so RaceHound cannot be pointed at someone's real database.
+  address is refused with an error, so Interleave cannot be pointed at someone's real database.
 - It listens on **`localhost:6433`** by default, not `:6433`. In Go, `:6433` means "every
   network interface", which would let anyone on your Wi-Fi reach your Postgres through the
   proxy. Postgres would also see those connections as coming from localhost.
@@ -226,7 +226,7 @@ is left running. The tests check this.
   before the `OnQuery` hook sees the next message (the hook may block once the scheduler exists).
 - All of it passes 20 times in a row under `go test -race`.
 
-**The command** (`cmd/racehound/main.go`): `racehound proxy [--listen ...] [--upstream ...] [--verbose]`
+**The command** (`cmd/interleave/main.go`): `interleave proxy [--listen ...] [--upstream ...] [--verbose]`
 (`--verbose` logs every query with its request tag, see Step 7).
 Exit code 2 means you gave it bad input (unknown command, remote upstream, port in use), 3 an
 internal error. `signal.NotifyContext` turns Ctrl+C into a cancelled `context`, which triggers
@@ -234,19 +234,19 @@ the clean shutdown described above.
 
 ### 6. Request tags (`internal/proxy/tag.go`, `victims/coupon/`)
 
-To control the order of statements, RaceHound must know **which HTTP request each statement
+To control the order of statements, Interleave must know **which HTTP request each statement
 belongs to**. The connection does not tell us: a pool hands the same connection to different
 requests (D-004). So the requests carry a name:
 
-1. RaceHound sends each request with a header, e.g. `X-RaceHound-Req: A`.
+1. Interleave sends each request with a header, e.g. `X-Interleave-Req: A`.
 2. The app puts that name in a SQL comment at the start of every statement:
-   `/* rh:req=A */ SELECT uses, max_uses FROM coupons ...`. Postgres ignores comments.
+   `/* il:req=A */ SELECT uses, max_uses FROM coupons ...`. Postgres ignores comments.
 3. The proxy reads the comment (`requestTag`) and reports `(tag, sql)` through its `OnQuery`
    hook. The scheduler will plug in there to hold statements.
 
 Rules (D-015, D-016):
 - The tag counts **only at the very start** of the query, so text inside a value (say a user
-  name `'/* rh:req=A */'`) cannot pretend to be a tag.
+  name `'/* il:req=A */'`) cannot pretend to be a tag.
 - A tag is 1-64 of `A-Z a-z 0-9 _ -`. The app **rejects any other header with 400**: the header
   is pasted into SQL, so `A */ DROP TABLE coupons; --` would otherwise be SQL injection.
 - The coupon app tags `BEGIN` and `COMMIT` too, through `pgx.TxOptions`. pgx's `rollback` cannot
@@ -274,7 +274,7 @@ gcc -dumpmachine      # x86_64-w64-mingw32   (64-bit, needed for -race)
 ```bash
 go test ./...
 ```
-Expected: `ok` lines for `cmd/racehound`, `internal/pgwire`, `internal/proxy` and `victims/coupon`.
+Expected: `ok` lines for `cmd/interleave`, `internal/pgwire`, `internal/proxy` and `victims/coupon`.
 
 Now the same with Go's race detector switched on:
 ```bash
@@ -293,8 +293,8 @@ because it depends on timing.
 ### Step 4: use the app by hand
 Terminal 1, reset the data and start the app talking straight to Postgres:
 ```bash
-psql "postgresql://racehound:racehound@localhost:5432/racehound" -f victims/coupon/seed.sql
-go run ./victims/coupon --dsn "postgres://racehound:racehound@localhost:5432/racehound?sslmode=disable&default_query_exec_mode=simple_protocol"
+psql "postgresql://interleave:interleave@localhost:5432/interleave" -f victims/coupon/seed.sql
+go run ./victims/coupon --dsn "postgres://interleave:interleave@localhost:5432/interleave?sslmode=disable&default_query_exec_mode=simple_protocol"
 ```
 (Two `NOTICE: relation ... already exists, skipping` lines are harmless.) Wait for
 `coupon victim listening on http://localhost:8081`.
@@ -306,20 +306,20 @@ curl -X POST localhost:8081/redeem -d '{"code":"DIWALI50","user_id":2}'   # → 
 ```
 Look inside the database:
 ```bash
-psql "postgresql://racehound:racehound@localhost:5432/racehound" -c "SELECT * FROM coupons" -c "SELECT * FROM redemptions"
+psql "postgresql://interleave:interleave@localhost:5432/interleave" -c "SELECT * FROM coupons" -c "SELECT * FROM redemptions"
 ```
 You should see `uses = 1` and one redemption row. One at a time, the app is correct.
 
 Now try to break it by hand. Reset, then fire 20 requests "at once":
 ```bash
-psql "postgresql://racehound:racehound@localhost:5432/racehound" -f victims/coupon/seed.sql
+psql "postgresql://interleave:interleave@localhost:5432/interleave" -f victims/coupon/seed.sql
 for i in $(seq 1 20); do curl -s -X POST localhost:8081/redeem -d "{\"code\":\"DIWALI50\",\"user_id\":$i}" & done; wait
 ```
 **You will almost certainly see only one `redeemed`.** On Windows each `curl` is a separate
 program that takes milliseconds to start, so the requests arrive one after another and never
 overlap. When we tried it: 1 redeemed, 19 rejected. The bug is there, but this test is too slow
 to hit it. The Go test in Step 3 gets the overlap only because its 50 goroutines start within
-microseconds. This is the core problem RaceHound solves: it will not depend on luck or speed.
+microseconds. This is the core problem Interleave solves: it will not depend on luck or speed.
 
 Stop the app with `Ctrl+C` in terminal 1.
 
@@ -340,14 +340,14 @@ git checkout internal/pgwire/message_test.go
 ### Step 6: run the app through the proxy
 Terminal 1, start the proxy:
 ```bash
-go run ./cmd/racehound proxy
+go run ./cmd/interleave proxy
 ```
-It prints `racehound proxy: 127.0.0.1:6433 -> localhost:5432 (Ctrl+C to stop)`.
+It prints `interleave proxy: 127.0.0.1:6433 -> localhost:5432 (Ctrl+C to stop)`.
 
 Terminal 2, reset the data and start the coupon app **without** `--dsn`, so it uses its default,
 port 6433, the proxy:
 ```bash
-psql "postgresql://racehound:racehound@localhost:5432/racehound" -f victims/coupon/seed.sql
+psql "postgresql://interleave:interleave@localhost:5432/interleave" -f victims/coupon/seed.sql
 go run ./victims/coupon
 ```
 
@@ -361,59 +361,59 @@ The app behaves exactly as before. That is the goal: the proxy is invisible.
 `psql` can go through the proxy too (port 6433). psql asks for SSL first, so this also shows the
 `N` reply working with a real client:
 ```bash
-psql "postgresql://racehound:racehound@localhost:6433/racehound" -c "SELECT code, uses, max_uses FROM coupons"
+psql "postgresql://interleave:interleave@localhost:6433/interleave" -c "SELECT code, uses, max_uses FROM coupons"
 ```
 
 And the 50-request race test, through the proxy instead of direct:
 ```bash
-RACEHOUND_TEST_DSN="postgres://racehound:racehound@localhost:6433/racehound?sslmode=disable&default_query_exec_mode=simple_protocol" \
+INTERLEAVE_TEST_DSN="postgres://interleave:interleave@localhost:6433/interleave?sslmode=disable&default_query_exec_mode=simple_protocol" \
   go test ./victims/coupon -run TestRaceIsReal -v -count=1
 ```
 It still finds the double-redeem: a pass-through proxy neither hides nor causes the bug. When
 we ran it: `round 2: single-use coupon redeemed 4 times`.
 
-Finally, press **Ctrl+C** in terminal 1. The proxy prints `racehound proxy: stopped`. Since the
+Finally, press **Ctrl+C** in terminal 1. The proxy prints `interleave proxy: stopped`. Since the
 coupon app's connections are cut, its next request will fail until the proxy is back.
 
 ### Step 7: watch the request tags
 Same three terminals as Step 6, but start the proxy with `--verbose`, which logs every query:
 ```bash
-go run ./cmd/racehound proxy --verbose
+go run ./cmd/interleave proxy --verbose
 ```
 Reset and start the app (terminal 2) as in Step 6, then send two named requests (terminal 3):
 ```bash
-curl -X POST localhost:8081/redeem -H "X-RaceHound-Req: A" -d '{"code":"DIWALI50","user_id":1}'
-curl -X POST localhost:8081/redeem -H "X-RaceHound-Req: B" -d '{"code":"DIWALI50","user_id":2}'
+curl -X POST localhost:8081/redeem -H "X-Interleave-Req: A" -d '{"code":"DIWALI50","user_id":1}'
+curl -X POST localhost:8081/redeem -H "X-Interleave-Req: B" -d '{"code":"DIWALI50","user_id":2}'
 ```
 Terminal 1 shows each statement with its request (when we ran it):
 ```
-query [A] /* rh:req=A */ BEGIN
-query [A] /* rh:req=A */ SELECT uses, max_uses FROM coupons WHERE code = 'DIWALI50'
-query [A] /* rh:req=A */ UPDATE coupons SET uses = uses + 1 WHERE code = 'DIWALI50'
-query [A] /* rh:req=A */ INSERT INTO redemptions (code, user_id) VALUES ( 'DIWALI50' , '1' )
-query [A] /* rh:req=A */ COMMIT
-query [B] /* rh:req=B */ BEGIN
-query [B] /* rh:req=B */ SELECT uses, max_uses FROM coupons WHERE code = 'DIWALI50'
+query [A] /* il:req=A */ BEGIN
+query [A] /* il:req=A */ SELECT uses, max_uses FROM coupons WHERE code = 'DIWALI50'
+query [A] /* il:req=A */ UPDATE coupons SET uses = uses + 1 WHERE code = 'DIWALI50'
+query [A] /* il:req=A */ INSERT INTO redemptions (code, user_id) VALUES ( 'DIWALI50' , '1' )
+query [A] /* il:req=A */ COMMIT
+query [B] /* il:req=B */ BEGIN
+query [B] /* il:req=B */ SELECT uses, max_uses FROM coupons WHERE code = 'DIWALI50'
 query [-] rollback
 ```
 `[-]` means untagged. You will also see `query [-] -- ping` now and then: the connection pool
 checking its connections. A bad header is refused before any SQL runs:
 ```bash
-curl -X POST localhost:8081/redeem -H "X-RaceHound-Req: A */ DROP TABLE coupons; --" -d '{"code":"DIWALI50","user_id":3}'
-# → invalid X-RaceHound-Req header
+curl -X POST localhost:8081/redeem -H "X-Interleave-Req: A */ DROP TABLE coupons; --" -d '{"code":"DIWALI50","user_id":3}'
+# → invalid X-Interleave-Req header
 ```
 
 ---
 
 ## Two different "race detectors": do not mix them up
 
-| | `go test -race` | RaceHound |
+| | `go test -race` | Interleave |
 |---|---|---|
 | Finds | Two **goroutines in Go code** touching the same variable without a lock | Two **HTTP requests** whose SQL statements interleave badly in the **database** |
 | How | Go adds checks to every memory access while the program runs | A proxy holds SQL statements and replays them in chosen orders |
 | Would it catch the coupon bug? | **No.** The Go code has no shared variable; the shared thing is a database row | **Yes**, that is its whole job |
 
-We use `go test -race` to check *RaceHound's own* code (the proxy will be heavily concurrent).
+We use `go test -race` to check *Interleave's own* code (the proxy will be heavily concurrent).
 This is a likely interview question.
 
 ---
@@ -429,10 +429,10 @@ This is a likely interview question.
   before it started. Plain `SELECT`s take no locks.
 - **Row lock / `FOR UPDATE`**: makes other transactions wait before touching that row until you
   commit. The standard fix for check-then-act.
-- **Invariant**: a rule that must always hold, e.g. `uses <= max_uses`. RaceHound checks
+- **Invariant**: a rule that must always hold, e.g. `uses <= max_uses`. Interleave checks
   invariants after every run.
 - **Interleaving / schedule**: one specific order in which the statements of concurrent requests
-  ran. RaceHound tries many of them.
+  ran. Interleave tries many of them.
 - **Proxy**: a program in the middle. The app connects to it as if it were Postgres; it passes
   traffic on to the real Postgres and can inspect or delay it.
 - **Wire protocol**: the exact byte format two programs use to talk over the network.
@@ -442,8 +442,8 @@ This is a likely interview question.
   force `simple_protocol`.
 - **Connection pool**: the app keeps a few database connections open and reuses them, instead
   of connecting per request.
-- **Request tag**: the name (A, B, ...) RaceHound gives each HTTP request. The app copies it
-  into a SQL comment, `/* rh:req=A */`, so the proxy knows which request a statement is from.
+- **Request tag**: the name (A, B, ...) Interleave gives each HTTP request. The app copies it
+  into a SQL comment, `/* il:req=A */`, so the proxy knows which request a statement is from.
 - **SQL injection**: user input pasted into SQL that changes what the SQL does. Why the app
   checks the tag header before using it.
 - **Goroutine / channel / WaitGroup**: Go's lightweight thread / a pipe for passing values (or
@@ -455,9 +455,9 @@ This is a likely interview question.
 
 ```
 README.md                 this file
-go.mod, go.sum            Go module "racehound" and its one dependency (pgx, the Postgres driver)
+go.mod, go.sum            Go module "interleave" and its one dependency (pgx, the Postgres driver)
 docs/                     SPEC, ARCHITECTURE, ROADMAP, DECISIONS, OVERVIEW, RESULTS
-cmd/racehound/            the racehound command (today: just `racehound proxy`)
+cmd/interleave/           the interleave command (today: just `interleave proxy`)
 internal/pgwire/          message framing + startup packets (Phase 1, step 1)
 internal/proxy/           pass-through proxy (Phase 1, step 2) + request tags (step 3)  ← newest
 cmd/bench/                load generator for the proxy overhead measurement

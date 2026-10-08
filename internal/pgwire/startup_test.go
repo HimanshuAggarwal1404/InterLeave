@@ -14,11 +14,11 @@ var (
 	// len 8, code 80877103 = 1234<<16 | 5679.
 	capturedSSLRequest = []byte{0x00, 0x00, 0x00, 0x08, 0x04, 0xd2, 0x16, 0x2f}
 
-	// len 65, code 196608 = 3<<16 | 0 (protocol 3.0), then name/value pairs,
+	// len 67, code 196608 = 3<<16 | 0 (protocol 3.0), then name/value pairs,
 	// each NUL-terminated, and one final NUL that ends the list.
-	capturedStartup = []byte("\x00\x00\x00\x41\x00\x03\x00\x00" +
-		"user\x00racehound\x00" +
-		"database\x00racehound\x00" +
+	capturedStartup = []byte("\x00\x00\x00\x43\x00\x03\x00\x00" +
+		"user\x00interleave\x00" +
+		"database\x00interleave\x00" +
 		"application_name\x00psql\x00" +
 		"\x00")
 )
@@ -40,17 +40,17 @@ func TestReadStartup(t *testing.T) {
 			input:    capturedStartup,
 			wantCode: ProtocolVersion30,
 			wantParams: map[string]string{
-				"user": "racehound", "database": "racehound", "application_name": "psql",
+				"user": "interleave", "database": "interleave", "application_name": "psql",
 			},
 		},
 		{
 			// Same as the captured packet but asking for protocol 3.2 (code 196610).
 			// Postgres 18 accepts it; we must too, and let the server negotiate.
 			name: "StartupMessage protocol 3.2",
-			input: []byte("\x00\x00\x00\x2b\x00\x03\x00\x02" +
-				"user\x00racehound\x00database\x00racehound\x00\x00"),
+			input: []byte("\x00\x00\x00\x2d\x00\x03\x00\x02" +
+				"user\x00interleave\x00database\x00interleave\x00\x00"),
 			wantCode:   ProtocolVersion32,
-			wantParams: map[string]string{"user": "racehound", "database": "racehound"},
+			wantParams: map[string]string{"user": "interleave", "database": "interleave"},
 		},
 		{
 			// len 8, code 80877104 = 1234<<16 | 5680.
@@ -97,8 +97,8 @@ func TestReadStartupSSLThenStartup(t *testing.T) {
 	if err != nil || second.Code != ProtocolVersion30 {
 		t.Fatalf("second = code %d, err %v; want protocol 3.0 StartupMessage", second.Code, err)
 	}
-	if second.Params["database"] != "racehound" {
-		t.Errorf("database = %q, want racehound", second.Params["database"])
+	if second.Params["database"] != "interleave" {
+		t.Errorf("database = %q, want interleave", second.Params["database"])
 	}
 }
 
@@ -110,13 +110,13 @@ func TestReadStartupErrors(t *testing.T) {
 	}{
 		{"clean EOF", []byte{}, io.EOF},
 		{"truncated length", []byte{0x00, 0x00}, io.ErrUnexpectedEOF},
-		{"truncated body", []byte{0x00, 0x00, 0x00, 0x41, 0x00, 0x03}, io.ErrUnexpectedEOF},
+		{"truncated body", []byte{0x00, 0x00, 0x00, 0x43, 0x00, 0x03}, io.ErrUnexpectedEOF},
 		// Every startup packet has at least length + code = 8 bytes.
 		{"length below 8", []byte{0x00, 0x00, 0x00, 0x07, 0x00, 0x03, 0x00}, nil},
 		// Postgres refuses startup packets over 10000 bytes; so do we, before allocating.
 		{"absurd length", []byte{0x00, 0x01, 0x00, 0x00}, nil},
 		// Parameter list missing its final NUL.
-		{"params not terminated", []byte("\x00\x00\x00\x17\x00\x03\x00\x00user\x00racehound\x00"), nil},
+		{"params not terminated", []byte("\x00\x00\x00\x18\x00\x03\x00\x00user\x00interleave\x00"), nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

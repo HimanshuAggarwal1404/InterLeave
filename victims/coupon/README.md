@@ -34,17 +34,17 @@ updated one row, because a single `UPDATE` re-checks its `WHERE` on the latest r
 ## Run it
 
 ```bash
-psql "postgresql://racehound:racehound@localhost:5432/racehound" -f victims/coupon/seed.sql
-go run ./victims/coupon --dsn "postgres://racehound:racehound@localhost:5432/racehound?sslmode=disable&default_query_exec_mode=simple_protocol"
+psql "postgresql://interleave:interleave@localhost:5432/interleave" -f victims/coupon/seed.sql
+go run ./victims/coupon --dsn "postgres://interleave:interleave@localhost:5432/interleave?sslmode=disable&default_query_exec_mode=simple_protocol"
 curl -X POST localhost:8081/redeem -d '{"code":"DIWALI50","user_id":1}'
 ```
 
-Without `--dsn` the app connects through RaceHound's proxy on port 6433.
+Without `--dsn` the app connects through Interleave's proxy on port 6433.
 Phase 0 exit test (blasts 50 concurrent redeems directly at Postgres):
 `go test ./victims/coupon -run TestRaceIsReal -v`
 
-Request tags: send `-H "X-RaceHound-Req: A"` and every statement, including `BEGIN`/`COMMIT`, starts
-with `/* rh:req=A */` (pgx's `rollback` cannot be tagged). Other header values get 400, because the
+Request tags: send `-H "X-Interleave-Req: A"` and every statement, including `BEGIN`/`COMMIT`, starts
+with `/* il:req=A */` (pgx's `rollback` cannot be tagged). Other header values get 400, because the
 tag is pasted into SQL. Without the header nothing is tagged.
 `TestQueriesCarryRequestTag` checks this through a real proxy.
 

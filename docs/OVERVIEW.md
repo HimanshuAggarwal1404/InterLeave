@@ -1,9 +1,9 @@
-# RaceHound: Overview
+# Interleave: Overview
 
 This is the plain-language "why and what" of the project. For exact requirements see
 `SPEC.md`; for how it is built see `ARCHITECTURE.md`.
 
-## What RaceHound is and is not
+## What Interleave is and is not
 
 - **A testing tool, not part of the app.** Run from the terminal like `go test`. No website or dashboard.
 - **The crash-test lab, not the seatbelt.** It finds races in the app's own rules (Postgres is
@@ -52,15 +52,15 @@ production inventory system (row locks against double-issuance of stock).
   gives no guarantee about which orders were tried, and produces no minimal reproduction.
 - Jepsen-style tools test databases themselves, not an application's business rules.
 
-## What RaceHound does
+## What Interleave does
 
 ```
-App  ──►  RaceHound proxy  ──►  Postgres
+App  ──►  Interleave proxy  ──►  Postgres
           (controls order)
 ```
 
-The app's `DATABASE_URL` points at RaceHound instead of Postgres. Every SQL statement passes
-through it. RaceHound holds each statement and decides which one goes next, so it can:
+The app's `DATABASE_URL` points at Interleave instead of Postgres. Every SQL statement passes
+through it. Interleave holds each statement and decides which one goes next, so it can:
 
 1. Deliberately create a dangerous interleaving instead of hoping for it.
 2. Explore many interleavings systematically, resetting the database between runs.
@@ -84,21 +84,21 @@ RACE FOUND  (schedule 7 of 20, check failed: uses=2, max_uses=1)
                                      UPDATE uses = uses + 1
                                      COMMIT
 
-  Replay: racehound replay .racehound/coupon-7.json
+  Replay: interleave replay .interleave/coupon-7.json
 ```
 
 ## How a developer uses it
 
-1. Point the app at RaceHound (`localhost:6433`) instead of Postgres (`localhost:5432`).
+1. Point the app at Interleave (`localhost:6433`) instead of Postgres (`localhost:5432`).
 2. Write a scenario file: seed data, which requests to fire concurrently, what must stay true.
-3. `racehound run scenario.yaml` → terminal verdict, a replayable failure file, later an HTML report.
-4. `racehound replay <file> --step` → re-run the exact failing order, pausing at each statement.
+3. `interleave run scenario.yaml` → terminal verdict, a replayable failure file, later an HTML report.
+4. `interleave replay <file> --step` → re-run the exact failing order, pausing at each statement.
 
 ## The hard parts (what makes this a strong project)
 
 - **Speaking the Postgres wire protocol** well enough that apps cannot tell the difference.
 - **Attributing statements to requests**, since connection pools shuffle connections.
-- **Not deadlocking itself**: if RaceHound holds A while B waits on a row lock that A's
+- **Not deadlocking itself**: if Interleave holds A while B waits on a row lock that A's
   transaction holds, everything freezes. It must detect lock waits and move on.
 - **Knowing when to decide**: a request may be running app code between statements. The
   scheduler must wait until every in-flight request is parked, blocked or finished.
@@ -140,7 +140,7 @@ RACE FOUND  (schedule 7 of 20, check failed: uses=2, max_uses=1)
 
 ## Out of scope (deliberately)
 
-- Web dashboards, logins, hosted service. RaceHound is a CLI plus a static HTML report.
+- Web dashboards, logins, hosted service. Interleave is a CLI plus a static HTML report.
 - Databases other than Postgres.
 - Testing anything other than apps and databases Himanshu runs locally.
 

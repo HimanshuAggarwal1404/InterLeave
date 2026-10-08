@@ -1,6 +1,6 @@
 // Command bench measures how many requests per second the coupon victim app
 // serves, to compare the app talking to Postgres directly with the app going
-// through the RaceHound proxy (pass-through overhead, NFR-3).
+// through the Interleave proxy (pass-through overhead, NFR-3).
 //
 // Usage: bench [flags] [URL ...]  (default URL: http://localhost:8081/redeem)
 //

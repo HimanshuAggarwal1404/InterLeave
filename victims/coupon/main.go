@@ -1,4 +1,4 @@
-// Command coupon is a deliberately racy victim app for RaceHound.
+// Command coupon is a deliberately racy victim app for Interleave.
 //
 // POST /redeem {"code": "DIWALI50", "user_id": 1} redeems a coupon if it has
 // uses left. It checks the count with a plain SELECT and then increments it in
@@ -21,9 +21,9 @@ import (
 )
 
 const (
-	// proxyDSN goes through RaceHound (default). directDSN bypasses it.
-	proxyDSN  = "postgres://racehound:racehound@localhost:6433/racehound?sslmode=disable&default_query_exec_mode=simple_protocol"
-	directDSN = "postgres://racehound:racehound@localhost:5432/racehound?sslmode=disable&default_query_exec_mode=simple_protocol"
+	// proxyDSN goes through Interleave (default). directDSN bypasses it.
+	proxyDSN  = "postgres://interleave:interleave@localhost:6433/interleave?sslmode=disable&default_query_exec_mode=simple_protocol"
+	directDSN = "postgres://interleave:interleave@localhost:5432/interleave?sslmode=disable&default_query_exec_mode=simple_protocol"
 )
 
 type redeemRequest struct {
@@ -33,7 +33,7 @@ type redeemRequest struct {
 
 func main() {
 	addr := flag.String("addr", "localhost:8081", "HTTP listen address")
-	dsn := flag.String("dsn", proxyDSN, "Postgres connection string (use port 5432 to bypass RaceHound)")
+	dsn := flag.String("dsn", proxyDSN, "Postgres connection string (use port 5432 to bypass Interleave)")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -52,11 +52,11 @@ func main() {
 func newHandler(pool *pgxpool.Pool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /redeem", func(w http.ResponseWriter, r *http.Request) {
-		// RaceHound names each request it fires (A, B, ...). The tag goes into
+		// Interleave names each request it fires (A, B, ...). The tag goes into
 		// SQL, so anything but a plain tag is refused (no SQL injection).
-		tag := r.Header.Get("X-RaceHound-Req")
+		tag := r.Header.Get("X-Interleave-Req")
 		if tag != "" && !validTag(tag) {
-			http.Error(w, "invalid X-RaceHound-Req header", http.StatusBadRequest)
+			http.Error(w, "invalid X-Interleave-Req header", http.StatusBadRequest)
 			return
 		}
 		var req redeemRequest
@@ -72,10 +72,10 @@ func newHandler(pool *pgxpool.Pool) http.Handler {
 }
 
 // redeem returns the HTTP status and message for one redemption attempt.
-// tc is the RaceHound tag comment that starts every statement ("" if none).
+// tc is the Interleave tag comment that starts every statement ("" if none).
 func redeem(ctx context.Context, pool *pgxpool.Pool, tc string, req redeemRequest) (int, string) {
 	// pgx lets us choose the BEGIN and COMMIT text, so those are tagged too.
-	// Its ROLLBACK cannot be, so it passes through RaceHound unscheduled (D-016).
+	// Its ROLLBACK cannot be, so it passes through Interleave unscheduled (D-016).
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{BeginQuery: tc + "BEGIN", CommitQuery: tc + "COMMIT"})
 	if err != nil {
 		return serverError(err)
@@ -115,16 +115,16 @@ func serverError(err error) (int, string) {
 	return http.StatusInternalServerError, "internal error"
 }
 
-// tagComment returns the SQL comment that tells RaceHound which request a
-// statement belongs to, e.g. "/* rh:req=A */ ", or "" without a tag.
+// tagComment returns the SQL comment that tells Interleave which request a
+// statement belongs to, e.g. "/* il:req=A */ ", or "" without a tag.
 func tagComment(tag string) string {
 	if tag == "" {
 		return ""
 	}
-	return "/* rh:req=" + tag + " */ "
+	return "/* il:req=" + tag + " */ "
 }
 
-// validTag accepts the tags RaceHound uses: 1-64 of A-Z a-z 0-9 _ -.
+// validTag accepts the tags Interleave uses: 1-64 of A-Z a-z 0-9 _ -.
 func validTag(tag string) bool {
 	if len(tag) > 64 {
 		return false

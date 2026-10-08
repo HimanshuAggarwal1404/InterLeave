@@ -8,7 +8,7 @@ import (
 const maxTagLen = 64
 
 // requestTag returns the request tag of a query that starts with the comment
-// /* rh:req=<tag> */ (leading whitespace allowed). Only the start of the query
+// /* il:req=<tag> */ (leading whitespace allowed). Only the start of the query
 // counts (D-015): the same text inside a string value must not pose as a tag.
 // It returns "" and no error for an untagged query, and an error when the
 // query starts with our comment but the comment is broken (an app bug).
@@ -17,7 +17,7 @@ func requestTag(sql string) (string, error) {
 	if !ok {
 		return "", nil
 	}
-	rest, ok = strings.CutPrefix(strings.TrimLeft(rest, " "), "rh:req=")
+	rest, ok = strings.CutPrefix(strings.TrimLeft(rest, " "), "il:req=")
 	if !ok {
 		return "", nil // some other comment
 	}

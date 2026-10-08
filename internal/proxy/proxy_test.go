@@ -14,15 +14,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"racehound/internal/pgwire"
+	"interleave/internal/pgwire"
 )
 
 // Byte fixtures. Same encodings as the pgwire tests (see there for captures).
 var (
 	sslRequest = []byte{0x00, 0x00, 0x00, 0x08, 0x04, 0xd2, 0x16, 0x2f}
-	// StartupMessage, protocol 3.0: user=racehound database=racehound.
-	startupMsg = []byte("\x00\x00\x00\x2b\x00\x03\x00\x00" +
-		"user\x00racehound\x00database\x00racehound\x00\x00")
+	// StartupMessage, protocol 3.0: user=interleave database=interleave.
+	startupMsg = []byte("\x00\x00\x00\x2d\x00\x03\x00\x00" +
+		"user\x00interleave\x00database\x00interleave\x00\x00")
 	// CancelRequest for PID 4242 with a 4-byte secret key.
 	cancelRequest = []byte{0x00, 0x00, 0x00, 0x10, 0x04, 0xd2, 0x16, 0x2e, 0x00, 0x00, 0x10, 0x92, 0xde, 0xad, 0xbe, 0xef}
 	// 'R' AuthenticationOk (len 8, code 0), then 'Z' ReadyForQuery idle.
@@ -119,10 +119,10 @@ func TestOnQueryReportsTags(t *testing.T) {
 		raw  []byte
 		want seen
 	}{
-		{queryMsg("/* rh:req=A */ SELECT 1"), seen{"A", "/* rh:req=A */ SELECT 1"}},
+		{queryMsg("/* il:req=A */ SELECT 1"), seen{"A", "/* il:req=A */ SELECT 1"}},
 		{query, seen{"", "SELECT 1"}},
 		// A broken tag is logged and treated as untagged; the query still goes through.
-		{queryMsg("/* rh:req=A;B */ SELECT 1"), seen{"", "/* rh:req=A;B */ SELECT 1"}},
+		{queryMsg("/* il:req=A;B */ SELECT 1"), seen{"", "/* il:req=A;B */ SELECT 1"}},
 	}
 	for _, tt := range tests {
 		write(t, client, tt.raw)
@@ -245,7 +245,7 @@ func TestRealPostgres(t *testing.T) {
 	for _, sslmode := range []string{"disable", "prefer"} {
 		t.Run("sslmode="+sslmode, func(t *testing.T) {
 			ctx := context.Background()
-			dsn := fmt.Sprintf("postgres://racehound:racehound@%s/racehound?sslmode=%s&default_query_exec_mode=simple_protocol&pool_max_conns=5&connect_timeout=5", addr, sslmode)
+			dsn := fmt.Sprintf("postgres://interleave:interleave@%s/interleave?sslmode=%s&default_query_exec_mode=simple_protocol&pool_max_conns=5&connect_timeout=5", addr, sslmode)
 			pool, err := pgxpool.New(ctx, dsn)
 			if err != nil {
 				t.Fatalf("pgxpool.New: %v", err)
@@ -263,8 +263,8 @@ func TestRealPostgres(t *testing.T) {
 						t.Errorf("query %d: %v", i, err)
 						return
 					}
-					if db != "racehound" || n != i+1 {
-						t.Errorf("query %d = (%q, %d), want (racehound, %d)", i, db, n, i+1)
+					if db != "interleave" || n != i+1 {
+						t.Errorf("query %d = (%q, %d), want (interleave, %d)", i, db, n, i+1)
 					}
 				})
 			}

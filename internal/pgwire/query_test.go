@@ -17,8 +17,8 @@ func TestQueryString(t *testing.T) {
 		},
 		{
 			name: "tagged query",
-			msg:  Message{Type: 'Q', Body: []byte("/* rh:req=A */ SELECT 1\x00")},
-			want: "/* rh:req=A */ SELECT 1",
+			msg:  Message{Type: 'Q', Body: []byte("/* il:req=A */ SELECT 1\x00")},
+			want: "/* il:req=A */ SELECT 1",
 		},
 		{
 			// An empty query string is legal: Postgres answers EmptyQueryResponse.

@@ -1,10 +1,10 @@
 # Build output
 /bin/
-/racehound
+/interleave
 *.exe
 
-# RaceHound run artifacts (schedules, reports)
-/.racehound/
+# Interleave run artifacts (schedules, reports)
+/.interleave/
 
 # Go
 *.test

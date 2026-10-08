@@ -1,11 +1,11 @@
-# RaceHound: Architecture
+# Interleave: Architecture
 
 How the system is put together. Interfaces below are sketches to guide design, not final code.
 
 ## 1. Big picture
 
 ```
-                 ┌──────────────────────── racehound run ────────────────────────┐
+                 ┌──────────────────────── interleave run ────────────────────────┐
                  │                                                                │
  scenario.yaml ─►│ scenario ─► runner ─┬─► reset (admin conn) ─► Postgres          │
                  │                     ├─► harness: fire HTTP requests A, B ──────►│─► victim app
@@ -22,12 +22,12 @@ How the system is put together. Interfaces below are sketches to guide design, n
                  └────────────────────────────────────────────────────────────────────┘
 ```
 
-The proxy runs inside the `racehound run` process, so the scheduler and proxy share memory.
+The proxy runs inside the `interleave run` process, so the scheduler and proxy share memory.
 
 ## 2. Package layout
 
 ```
-cmd/racehound/        CLI entry point: run, replay, proxy subcommands (flag parsing only)
+cmd/interleave/       CLI entry point: run, replay, proxy subcommands (flag parsing only)
 cmd/bench/            HTTP load generator for the pass-through overhead measurement (NFR-3)
 internal/pgwire/      Message framing: read/write typed messages, startup packets. No policy.
 internal/proxy/       Accepts client conns, dials upstream, forwards bytes, extracts request
@@ -37,7 +37,7 @@ internal/sched/       Parks steps, tracks request states, decides at decision po
 internal/explore/     Strategies that produce choices: exhaustive DFS with replay,
                       random (seeded). Later: PCT, partial-order reduction.
 internal/oracle/      Runs invariants; later the serial-equivalence check.
-internal/harness/     Fires HTTP requests concurrently with X-RaceHound-Req tags, collects responses.
+internal/harness/     Fires HTTP requests concurrently with X-Interleave-Req tags, collects responses.
 internal/reset/       Executes reset SQL on the admin connection. Later: template-DB clones.
 internal/scenario/    Parses and validates scenario.yaml.
 internal/report/      Terminal timeline, schedule.json writer/reader, later HTML report.
@@ -68,7 +68,7 @@ shared types. Keep `sched` free of networking so it can be unit-tested with fake
 
 1. `reset` runs the scenario's reset SQL on the admin connection.
 2. `harness` fires all requests concurrently, each with its tag header.
-3. The app executes; each SQL statement reaches the `proxy` with `/* rh:req=X */`.
+3. The app executes; each SQL statement reaches the `proxy` with `/* il:req=X */`.
 4. `proxy` sends the step to `sched` and blocks that connection's forwarding until released.
 5. `sched` waits for a decision point (quiet period handles requests still in app code), asks the
    explorer for a choice, releases that step. `proxy` forwards it upstream.
@@ -146,4 +146,4 @@ when the coupon is exhausted), so schedules are not precomputed. Instead:
 - Delta-debugging shrinker for failing schedules.
 - Fast reset: template databases cloned per run, proxy rewrites the `database` startup parameter.
 - Extended protocol scheduling (step = Parse..Sync group), ORM and non-Go victims.
-- Static HTML report, `racehound replay --step` polish, GitHub Action.
+- Static HTML report, `interleave replay --step` polish, GitHub Action.

@@ -1,4 +1,4 @@
-// Command racehound finds race conditions in database-backed web apps.
+// Command interleave finds race conditions in database-backed web apps.
 package main
 
 import (
@@ -12,7 +12,7 @@ import (
 	"os/signal"
 	"strings"
 
-	"racehound/internal/proxy"
+	"interleave/internal/proxy"
 )
 
 // Exit codes (docs/SPEC.md section 3).
@@ -23,7 +23,7 @@ const (
 )
 
 const usage = `usage:
-  racehound proxy [--listen localhost:6433] [--upstream localhost:5432] [--verbose]
+  interleave proxy [--listen localhost:6433] [--upstream localhost:5432] [--verbose]
       pass-through proxy, for debugging (Ctrl+C to stop); --verbose logs
       every query with its request tag`
 
@@ -75,12 +75,12 @@ func runProxy(args []string) int {
 	// ctx is cancelled on Ctrl+C, which makes Serve close everything and return.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	log.Printf("racehound proxy: %s -> %s (Ctrl+C to stop)", ln.Addr(), *upstream)
+	log.Printf("interleave proxy: %s -> %s (Ctrl+C to stop)", ln.Addr(), *upstream)
 	if err := p.Serve(ctx, ln); err != nil {
-		log.Printf("racehound proxy: %v", err)
+		log.Printf("interleave proxy: %v", err)
 		return exitInternal
 	}
-	log.Print("racehound proxy: stopped")
+	log.Print("interleave proxy: stopped")
 	return exitOK
 }
 

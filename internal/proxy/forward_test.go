@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"racehound/internal/pgwire"
+	"interleave/internal/pgwire"
 )
 
 var (

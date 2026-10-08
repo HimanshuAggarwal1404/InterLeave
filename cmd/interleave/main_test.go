@@ -26,9 +26,9 @@ func TestQueryLogLine(t *testing.T) {
 	tests := []struct {
 		tag, sql, want string
 	}{
-		{"A", "/* rh:req=A */ SELECT 1", "query [A] /* rh:req=A */ SELECT 1"},
+		{"A", "/* il:req=A */ SELECT 1", "query [A] /* il:req=A */ SELECT 1"},
 		{"", "begin", "query [-] begin"},
-		{"B", "/* rh:req=B */ SELECT 1\n  FROM t", "query [B] /* rh:req=B */ SELECT 1 FROM t"},
+		{"B", "/* il:req=B */ SELECT 1\n  FROM t", "query [B] /* il:req=B */ SELECT 1 FROM t"},
 	}
 	for _, tt := range tests {
 		if got := queryLogLine(tt.tag, tt.sql); got != tt.want {

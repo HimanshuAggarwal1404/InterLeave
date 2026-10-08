@@ -1,18 +1,18 @@
-# RaceHound: MVP Specification
+# Interleave: MVP Specification
 
 Scope: what "MVP done" means (end of Phase 2 in `ROADMAP.md`, roughly week 5).
 Anything not listed here is out of MVP scope.
 
 ## 1. MVP goal
 
-Given a scenario with 2 concurrent HTTP requests against a local victim app, RaceHound
+Given a scenario with 2 concurrent HTTP requests against a local victim app, Interleave
 systematically explores statement interleavings through its proxy, detects an invariant
 violation, and prints a minimal-enough failing timeline that can be replayed deterministically.
 
 ## 2. Users and environment
 
 - User: a developer on their own machine (Himanshu).
-- Database: PostgreSQL 18, native Windows service on `localhost:5432`, database `racehound`.
+- Database: PostgreSQL 18, native Windows service on `localhost:5432`, database `interleave`.
   (`docker-compose.yml` exists for other people and the Phase 5 demo only.)
 - Proxy listens on `localhost:6433`.
 - Victim apps: small Go HTTP servers in `victims/`, each with one deliberate race.
@@ -20,9 +20,9 @@ violation, and prints a minimal-enough failing timeline that can be replayed det
 ## 3. CLI (MVP)
 
 ```
-racehound run <scenario.yaml> [--strategy exhaustive|random] [--max-runs N] [--seed S]
-racehound replay <schedule.json> [--step]
-racehound proxy [--listen localhost:6433] [--upstream localhost:5432] [--verbose]   # pass-through only, for debugging (D-012); --verbose logs queries + tags
+interleave run <scenario.yaml> [--strategy exhaustive|random] [--max-runs N] [--seed S]
+interleave replay <schedule.json> [--step]
+interleave proxy [--listen localhost:6433] [--upstream localhost:5432] [--verbose]   # pass-through only, for debugging (D-012); --verbose logs queries + tags
 ```
 
 Exit codes: `0` no violation found, `1` violation found, `2` usage or configuration error,
@@ -35,7 +35,7 @@ name: coupon-double-redeem
 app:
   base_url: http://localhost:8081       # victim app, already running, DB pointed at :6433
 database:
-  admin_dsn: postgres://racehound:racehound@localhost:5432/racehound?sslmode=disable
+  admin_dsn: postgres://interleave:interleave@localhost:5432/interleave?sslmode=disable
   reset: victims/coupon/seed.sql        # executed on admin connection before every run
 requests:                               # fired concurrently, each gets a tag A, B, ...
   - method: POST
@@ -67,8 +67,8 @@ invariants:                             # each must return a single boolean true
   MVP and logged as a warning, so apps do not break.
 
 **Request attribution**
-- FR-7: The harness sends each request with header `X-RaceHound-Req: A|B|...`. Victim apps prefix
-  every query with the SQL comment `/* rh:req=A */`. The proxy reads the tag from the comment,
+- FR-7: The harness sends each request with header `X-Interleave-Req: A|B|...`. Victim apps prefix
+  every query with the SQL comment `/* il:req=A */`. The proxy reads the tag from the comment,
   only at the very start of the query; a tag is 1-64 of `A-Z a-z 0-9 _ -` (D-015). Victims
   reject any other header value with 400, since the tag is pasted into SQL.
 - FR-8: Statements with no tag pass through immediately and are not scheduled (pool health checks
@@ -101,7 +101,7 @@ invariants:                             # each must return a single boolean true
 **Reporting and replay**
 - FR-20: On violation, print a two-column (or N-column) timeline of statements per request, in
   executed order, with each statement's result summary (rows affected / first value / error).
-- FR-21: Write the failing schedule to `.racehound/<scenario>-<run>.json` (scenario path, choices,
+- FR-21: Write the failing schedule to `.interleave/<scenario>-<run>.json` (scenario path, choices,
   seed, invariant results, timeline).
 - FR-22: `replay` re-runs exactly that schedule and must reproduce the same violation.
 - FR-23: `replay --step` pauses before each released statement until Enter is pressed.
@@ -124,22 +124,22 @@ bug, the expected bad interleaving, and the correct fix. Go + `pgx` with
 | approval | two approvers act on one pending request | one approval per request |
 | counter | non-atomic increment (read, add in app, write) | final count = number of increments |
 
-Each victim also has a fixed variant (flag `--fixed`) that RaceHound must report as clean.
+Each victim also has a fixed variant (flag `--fixed`) that Interleave must report as clean.
 
 ## 7. Non-functional requirements
 
 - NFR-1: Single static Go binary. Only external runtime dependency: Postgres.
 - NFR-2: Deterministic: the same scenario, strategy and seed produce the same sequence of schedules.
 - NFR-3: The proxy adds no meaningful overhead in pass-through mode (measure it).
-- NFR-4: RaceHound's own code is `go test -race` clean.
+- NFR-4: Interleave's own code is `go test -race` clean.
 - NFR-5: Clear errors for misconfiguration (proxy cannot reach Postgres, app not reachable,
   untagged requests, invariant SQL error).
 
 ## 8. MVP acceptance criteria
 
 1. Kill test (Phase 1): a hand-written schedule reproduces the coupon double-redeem 10 times out of 10.
-2. `racehound run` finds the race in all 8 victim apps, and reports none for all 8 fixed variants.
-3. Every reported violation replays identically with `racehound replay`.
+2. `interleave run` finds the race in all 8 victim apps, and reports none for all 8 fixed variants.
+3. Every reported violation replays identically with `interleave replay`.
 4. `docs/RESULTS.md` has a dated table with runs-to-first-violation, runs/sec and resets/sec for
    each victim, for both strategies.
 

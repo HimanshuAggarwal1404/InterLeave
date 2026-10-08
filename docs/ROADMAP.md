@@ -1,4 +1,4 @@
-# RaceHound: Roadmap
+# Interleave: Roadmap
 
 About 12 weeks at 10-15 hours/week (alongside an internship until early January and
 placement prep). Each phase has an exit test. Do not start a phase before the previous exit test passes.
@@ -10,13 +10,13 @@ placement prep). Each phase has an exit test. Do not start a phase before the pr
 - `go mod init`, repo skeleton, Makefile or task list of commands.
 - First victim app `victims/coupon` talking directly to Postgres (port 5432), plus seed.sql.
 - **Exit test:** firing 50 concurrent redeems at the coupon app directly sometimes over-redeems
-  (proves the bug is real before RaceHound exists).
+  (proves the bug is real before Interleave exists).
 
 ## Phase 1: Proxy and kill test (weeks 1-2)
 - `pgwire`: message framing, startup packet parsing, unit tests with captured bytes.
 - `proxy`: pass-through mode. Coupon app works unchanged through `:6433`.
 - Measure pass-through overhead (requests/sec direct vs via proxy).
-- Tag extraction from `/* rh:req=X */`; victim app adds tags from the header.
+- Tag extraction from `/* il:req=X */`; victim app adds tags from the header.
 - First `sched` version: park steps and release them in a hard-coded order.
 - **Exit test (kill test):** a hard-coded schedule reproduces the coupon double-redeem 10/10 times,
   and the opposite order never does. If this fails after 2 weeks, re-scope before continuing.
@@ -43,7 +43,7 @@ placement prep). Each phase has an exit test. Do not start a phase before the pr
 ## Phase 4: Real-world apps (weeks 9-10)
 - Extended protocol: schedule a Parse/Bind/Execute/Sync group as one step.
 - Victims in Node (node-postgres) and Python (psycopg / SQLAlchemy) to prove language independence.
-- Point RaceHound at one open-source app with money/inventory logic, run locally.
+- Point Interleave at one open-source app with money/inventory logic, run locally.
 - **Exit test:** at least one non-Go victim and one ORM-based app work end to end.
 
 ## Phase 5: Ship it (weeks 11-12)

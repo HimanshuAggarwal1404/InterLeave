@@ -15,14 +15,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"racehound/internal/proxy"
+	"interleave/internal/proxy"
 )
 
 // TestRaceIsReal is the Phase 0 exit test. It fires many concurrent redeems at
-// the app (talking straight to Postgres, no RaceHound) and expects the
+// the app (talking straight to Postgres, no Interleave) and expects the
 // single-use coupon to be redeemed more than once in at least one round.
 // Whether the bad interleaving happens depends on timing, so it tries several
-// rounds. This is the luck-based "blasting" that RaceHound will replace.
+// rounds. This is the luck-based "blasting" that Interleave will replace.
 func TestRaceIsReal(t *testing.T) {
 	ctx := context.Background()
 	pool := testPool(t)
@@ -50,11 +50,11 @@ func TestRaceIsReal(t *testing.T) {
 	t.Fatalf("no over-redeem in %d rounds of %d concurrent requests", rounds, concurrent)
 }
 
-// testPool connects to the racehound database directly (port 5432, bypassing
-// the proxy). Set RACEHOUND_TEST_DSN to use a different database.
+// testPool connects to the interleave database directly (port 5432, bypassing
+// the proxy). Set INTERLEAVE_TEST_DSN to use a different database.
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("RACEHOUND_TEST_DSN")
+	dsn := os.Getenv("INTERLEAVE_TEST_DSN")
 	if dsn == "" {
 		dsn = directDSN
 	}
@@ -105,8 +105,8 @@ func fireConcurrently(t *testing.T, baseURL string, n int) {
 	wg.Wait()
 }
 
-// TestQueriesCarryRequestTag runs the app through a real RaceHound proxy and
-// checks which statements carry the tag from the X-RaceHound-Req header.
+// TestQueriesCarryRequestTag runs the app through a real Interleave proxy and
+// checks which statements carry the tag from the X-Interleave-Req header.
 func TestQueriesCarryRequestTag(t *testing.T) {
 	resetDB(t, testPool(t))
 	seen := &queryLog{}
@@ -155,7 +155,7 @@ func TestQueriesCarryRequestTag(t *testing.T) {
 	}
 }
 
-// poolViaProxy starts an in-process RaceHound proxy in front of the local
+// poolViaProxy starts an in-process Interleave proxy in front of the local
 // Postgres, reporting every query to onQuery, and returns a pool through it.
 func poolViaProxy(t *testing.T, onQuery func(tag, sql string)) *pgxpool.Pool {
 	t.Helper()
@@ -187,7 +187,7 @@ func poolViaProxy(t *testing.T, onQuery func(tag, sql string)) *pgxpool.Pool {
 	return pool
 }
 
-// post sends one redeem request with the given X-RaceHound-Req header ("" for
+// post sends one redeem request with the given X-Interleave-Req header ("" for
 // none) and returns the HTTP status.
 func post(t *testing.T, baseURL, tag string) int {
 	t.Helper()
@@ -197,7 +197,7 @@ func post(t *testing.T, baseURL, tag string) int {
 		t.Fatal(err)
 	}
 	if tag != "" {
-		req.Header.Set("X-RaceHound-Req", tag)
+		req.Header.Set("X-Interleave-Req", tag)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -13,7 +13,7 @@ import (
 	"net"
 	"sync"
 
-	"racehound/internal/pgwire"
+	"interleave/internal/pgwire"
 )
 
 // Proxy forwards client connections to one local Postgres server.
@@ -28,7 +28,7 @@ type Proxy struct {
 }
 
 // New returns a proxy that forwards to upstream ("host:port"). The host must
-// be this machine: RaceHound only ever talks to the local Postgres.
+// be this machine: Interleave only ever talks to the local Postgres.
 func New(upstream string) (*Proxy, error) {
 	host, _, err := net.SplitHostPort(upstream)
 	if err != nil {
