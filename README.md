@@ -47,6 +47,8 @@ replay that order on demand. Instead of hoping to get unlucky, it tries every or
 | 7 | Overhead benchmark | Measures requests/sec with and without the proxy (results in `docs/RESULTS.md`) | `cmd/bench/` |
 | 8 | Request tags (Phase 1, step 3) | Each statement says which HTTP request it belongs to; the proxy reads it | `internal/proxy/tag.go`, `victims/coupon/` |
 | 8b | Step done (Phase 1, step 4) | The proxy tells its hook when each statement has finished, and how (`ReadyForQuery` status) | `internal/proxy/proxy.go`, `internal/pgwire/ready.go` |
+| 8c | `--fixed` coupon | The correct version of the app (`SELECT ... FOR UPDATE`), proven by blasting | `victims/coupon/` |
+| 8d | Scheduler spec + kill test | Tests written before the scheduler: what it must do, and the Phase 1 exit test | `internal/sched/sched_test.go`, `victims/coupon/kill_test.go` |
 | 9 | Project docs | Spec, architecture, roadmap, decisions, overview, results | `docs/` |
 
 The order-trying engine (scheduler, explorer, invariant checker) does not exist yet. So far we
@@ -75,10 +77,12 @@ A "victim" is a small app that is buggy on purpose, so Interleave has something 
 uses the **READ COMMITTED** isolation level, where a plain `SELECT` takes no lock. Request B can
 read the row while request A is still between its check and its update. Both see `uses = 0`.
 
-**The fix** (not applied, because the bug is the point): `SELECT ... FOR UPDATE` locks the row,
-so B has to wait until A commits, and then sees `uses = 1`. Later, Interleave must show the buggy
-version breaks in some order and the fixed version holds in **every** order. That before/after
-proof is the product.
+**The fix**, behind the `--fixed` flag (the default stays buggy, because the bug is the point):
+`SELECT ... FOR UPDATE` locks the row, so B has to wait until A commits, and then sees
+`uses = 1`. Later, Interleave must show the buggy version breaks in some order and the fixed
+version holds in **every** order. That before/after proof is the product.
+`TestFixedNeverOverRedeems` blasts the fixed version the same way `TestRaceIsReal` blasts the
+buggy one (20 rounds of 50 requests): it must never over-redeem, and exactly one request wins.
 
 **How it connects to Postgres:** by default to port **6433**, where Interleave's proxy listens
 (start it with `interleave proxy`, see "Try it yourself" Step 6). Pass `--dsn` with port
@@ -299,6 +303,11 @@ go test ./victims/coupon -run TestRaceIsReal -v -count=1
 `single-use coupon redeemed N times`, where N is bigger than 1. Run it a few times: N changes,
 because it depends on timing.
 
+Now the same blast against the fixed version, which must hold every time:
+```bash
+go test ./victims/coupon -run TestFixedNeverOverRedeems -v -count=1
+```
+
 ### Step 4: use the app by hand
 Terminal 1, reset the data and start the app talking straight to Postgres:
 ```bash
@@ -468,9 +477,10 @@ go.mod, go.sum            Go module "interleave" and its one dependency (pgx, th
 docs/                     SPEC, ARCHITECTURE, ROADMAP, DECISIONS, OVERVIEW, RESULTS
 cmd/interleave/           the interleave command (today: just `interleave proxy`)
 internal/pgwire/          message framing + startup packets (Phase 1, step 1)
-internal/proxy/           pass-through proxy (Phase 1, step 2) + request tags (step 3)  ← newest
+internal/proxy/           pass-through proxy (Phase 1, step 2), request tags, step done
+internal/sched/           scheduler spec as tests (sched_test.go); the code comes next  ← newest
 cmd/bench/                load generator for the proxy overhead measurement
-victims/coupon/           the buggy coupon app, its seed data, README and exit test
+victims/coupon/           the buggy coupon app (+ --fixed), seed data, README, exit + kill tests
 docker-compose.yml        only for other people / the final demo; not used on this machine
 ```
 
@@ -479,10 +489,12 @@ docker-compose.yml        only for other people / the final demo; not used on th
 ## What comes next (rest of Phase 1)
 
 1. ~~**Proxy, pass-through mode**~~: done (section 5 above).
-2. ~~**You:** measure how much slower requests are through the proxy than direct~~: done
+2. ~~**Overhead**: measure how much slower requests are through the proxy than direct~~: done
    (`docs/RESULTS.md`; write batching made the proxy 20.5% faster).
-3. ~~**Request tags**~~: done (section 6 above).
-4. **You:** the first scheduler (`internal/sched`): hold statements and release them in a
-   hard-coded order.
-5. **Kill test** (Phase 1 exit): one hard-coded order causes the double-redeem 10 out of 10
-   times, and the opposite order never does.
+3. ~~**Request tags**~~ and ~~**step done**~~: done (section 6 above).
+4. **Scheduler v1** (`internal/sched`): hold statements and release them in a hard-coded order.
+   Its spec is written first, as tests (`internal/sched/sched_test.go`), behind a `sched` build
+   tag so the normal test run stays green until the package exists:
+   `go test -race -tags sched ./internal/sched`.
+5. **Kill test** (Phase 1 exit, `victims/coupon/kill_test.go`, same build tag): one hard-coded
+   order causes the double-redeem 10 out of 10 times, and the opposite order never does.

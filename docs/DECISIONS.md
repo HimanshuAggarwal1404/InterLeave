@@ -230,3 +230,23 @@ Alternatives: keep the Postgres role/database as `racehound` (nothing breaks, bu
 Consequences: the Postgres role and database are renamed by hand; until then
 `TestRealPostgres` fails with an auth error. The project folder `D:\RaceHound` is renamed by hand.
 Earlier entries and the session log were rewritten to use the new name.
+
+## D-019: sched v1 interface, specified by tests written before the code
+Status: Proposed      Date: 2026-10-09
+Context: Phase 1 needs a first scheduler that parks tagged steps and releases them in a
+hard-coded order (the kill test). Its behaviour should be pinned down before it is written.
+Decision: `sched.New(order []string)`, where order lists request tags in release order (the
+n-th `A` = A's n-th tagged statement). `(*Scheduler).OnQuery(ctx, tag, sql) func(status byte)`
+has the proxy hook's shape (D-017), so `p.OnQuery = s.OnQuery`. `(*Scheduler).Run(ctx)
+([]Step, error)` is the single goroutine that owns all state; `Step{Tag, SQL, Status}` is what
+ran, in order. Rules: release exactly one step at a time, the next only after the previous
+`done`; untagged queries and tags not in the order pass through (D-016); after `Run` returns
+nothing blocks; a cancelled ctx (OnQuery's or Run's) un-parks waiting steps. The spec lives in
+`internal/sched/sched_test.go` (7 tests, fake requests, no networking) and the Phase 1 exit test
+in `victims/coupon/kill_test.go`; both carry a `sched` build tag until the package exists.
+Alternatives: order as explicit (tag, statement index) pairs (more verbose, same power for v1);
+steps addressed by SQL text (breaks when two statements are equal); no build tag (the normal
+`go test ./...` would fail to compile until sched exists).
+Consequences: v1 has no quiet period, lock-wait timeout or explorer: an order that makes a step
+wait on a lock held by a parked step deadlocks until the run ctx times out (Phase 2 handles
+that). Remove the build tags once the tests pass.

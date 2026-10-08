@@ -48,4 +48,13 @@ with `/* il:req=A */` (pgx's `rollback` cannot be tagged). Other header values g
 tag is pasted into SQL. Without the header nothing is tagged.
 `TestQueriesCarryRequestTag` checks this through a real proxy.
 
-Still to come: `--fixed` (Phase 1), `scenario.yaml` (Phase 2).
+Fixed variant: `go run ./victims/coupon --fixed` uses `SELECT ... FOR UPDATE`.
+`TestFixedNeverOverRedeems` blasts it like `TestRaceIsReal` (20 rounds of 50 requests): never more
+than one redemption.
+
+Kill test (Phase 1 exit, `kill_test.go`): requests A and B go through a real proxy whose scheduler
+releases their statements in a fixed order. The bad order (A BEGIN, A SELECT, B BEGIN, B SELECT,
+then A's UPDATE/INSERT/COMMIT, then B's) must double-redeem 10/10 times; the serial order (all of A,
+then B) never may. It needs `internal/sched`, so it builds only with `-tags sched` until then.
+
+Still to come: `scenario.yaml` (Phase 2).
