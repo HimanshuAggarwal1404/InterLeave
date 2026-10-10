@@ -133,13 +133,22 @@ export class PgProxy {
     // conn is aborted when this connection ends for any reason. It un-parks a
     // query waiting in onQuery and stops a pump waiting for 'drain'.
     const conn = new AbortController();
+    // closing is set once we close the connection ourselves; from then on,
+    // failed reads and writes are expected and not logged (Go: net.ErrClosed).
+    let closing = false;
     // On shutdown, close both sockets at once: that makes every pending read
     // fail, so both pumps stop.
     const onStop = () => {
+      closing = true;
       conn.abort(stop.reason);
       client.destroy();
       upstream?.destroy();
     };
+    // A socket can also close by itself (the app resets its connection) while
+    // no pump is reading it: the app→postgres pump may be waiting in onQuery,
+    // and a write to a closed socket never emits 'drain'. Aborting conn wakes
+    // both, so a parked query hears that its connection is gone.
+    client.once('close', () => conn.abort(new Error('app connection closed')));
     stop.addEventListener('abort', onStop, { once: true });
     if (stop.aborted) {
       onStop();
@@ -153,7 +162,7 @@ export class PgProxy {
       try {
         first = await readStartup(client, clientR);
       } catch (err) {
-        if (!conn.signal.aborted) {
+        if (!closing) {
           log(`proxy: ${addr}: startup: ${errorMessage(err)}`);
         }
         return;
@@ -167,11 +176,12 @@ export class PgProxy {
       try {
         await once(upstream, 'connect', { signal: conn.signal });
       } catch (err) {
-        if (!conn.signal.aborted) {
+        if (!closing) {
           log(`proxy: ${addr}: connecting to Postgres: ${errorMessage(err)}`);
         }
         return;
       }
+      upstream.once('close', () => conn.abort(new Error('Postgres connection closed')));
       if (first.code === CANCEL_REQUEST_CODE) {
         // A cancel is the only thing sent on its connection; Postgres hangs up after it.
         upstream.end(first.raw);
@@ -184,6 +194,7 @@ export class PgProxy {
       // conn, which un-parks a query waiting in onQuery.
       const server = upstream;
       const closeBoth = () => {
+        closing = true;
         conn.abort();
         closeGracefully(client);
         closeGracefully(server);
@@ -206,7 +217,7 @@ export class PgProxy {
           await forward(src, dst, hooks);
         } catch (err) {
           // Once we are closing, failed reads and writes are expected (Go: net.ErrClosed).
-          if (!conn.signal.aborted) {
+          if (!closing) {
             log(`proxy: ${addr}: ${where}: ${errorMessage(err)}`);
           }
         } finally {
@@ -218,6 +229,7 @@ export class PgProxy {
         pump('postgres→app', new WireReader(server), client, toClient),
       ]);
     } finally {
+      closing = true;
       conn.abort();
       closeGracefully(client);
       if (upstream !== undefined) {
@@ -254,6 +266,13 @@ async function inspectQuery(
   m: Message,
   pending: Array<DoneFn | undefined>,
 ): Promise<void> {
+  if (m.type === 'S' || m.type === 'F') {
+    // A Sync (extended protocol) or FunctionCall also gets exactly one
+    // ReadyForQuery. It is not scheduled (FR-6), but it takes a slot, or its
+    // ReadyForQuery would be credited to the next Query.
+    pending.push(undefined);
+    return;
+  }
   if (m.type !== 'Q') {
     return;
   }
@@ -287,8 +306,8 @@ async function inspectQuery(
 }
 
 // reportReady hands a ReadyForQuery's status to the oldest queued done. If
-// nothing is queued, the ReadyForQuery answers no Query of ours: it is the one
-// that ends startup, or it ends an extended-protocol Sync (FR-6).
+// nothing is queued, the ReadyForQuery answers nothing we forwarded: it is
+// the one that ends startup.
 function reportReady(addr: string, m: Message, pending: Array<DoneFn | undefined>): void {
   let status: ReadyStatus;
   try {

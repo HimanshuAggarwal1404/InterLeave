@@ -62,6 +62,10 @@ async function flush(dst: Writable, held: Buffer[], signal: AbortSignal | undefi
   }
   const chunk = held.length === 1 ? held[0] : Buffer.concat(held);
   held.length = 0;
+  if (dst.destroyed) {
+    // A destroyed socket accepts nothing and never emits 'drain'.
+    throw new Error('write to a closed connection');
+  }
   if (!dst.write(chunk)) {
     await once(dst, 'drain', { signal });
   }

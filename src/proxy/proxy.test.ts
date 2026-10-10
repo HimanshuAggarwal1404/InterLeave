@@ -203,6 +203,94 @@ test('DoneGetsEachQuerysReadyStatus', async (t) => {
   assert.deepEqual(finishes, [{ sql: '/* il:req=B */ SELECT 2', status: 'I' }], 'pipelined: B must get the second status, once');
 });
 
+// parkingHook parks every query until its signal aborts, and records the abort.
+function parkingHook(): { hook: PgProxy['onQuery']; state: { parked: number; aborted: number } } {
+  const state = { parked: 0, aborted: 0 };
+  const hook = (signal: AbortSignal) => {
+    state.parked++;
+    return new Promise<undefined>((resolve) =>
+      signal.addEventListener(
+        'abort',
+        () => {
+          state.aborted++;
+          resolve(undefined);
+        },
+        { once: true },
+      ),
+    );
+  };
+  return { hook, state };
+}
+
+// If the app's connection dies (here: reset) while one of its queries is
+// parked, the hook's signal must abort so the scheduler hears about it. The
+// app→postgres pump is stuck in the hook and does not read, so the proxy has
+// to notice the socket closing by itself.
+test('AppResetReleasesParkedQuery', async (t) => {
+  const upstream = await fakeUpstream(t);
+  const p = new PgProxy(upstream.addr);
+  const { hook, state } = parkingHook();
+  p.onQuery = hook;
+  const { client } = await connectedClient(t, p, upstream);
+
+  client.write(queryMsg('/* il:req=A */ SELECT 1'));
+  await waitUntil(() => state.parked === 1, 'onQuery was never called');
+  client.socket.resetAndDestroy();
+  await waitUntil(() => state.aborted === 1, "the parked query's signal did not abort after the app reset its connection");
+});
+
+// The same while a reply is on its way: Q1 is released, Q2 parked, the app
+// resets, then Postgres answers Q1. Writing that reply to the dead socket must
+// not leave the postgres→app pump waiting forever for 'drain' (a destroyed
+// socket never emits it), and Q2 must still be released.
+test('AppResetWhileReplyPendingReleasesParkedQuery', async (t) => {
+  const upstream = await fakeUpstream(t);
+  const p = new PgProxy(upstream.addr);
+  let calls = 0;
+  let aborted = false;
+  p.onQuery = (signal) => {
+    calls++;
+    if (calls === 1) {
+      return () => {}; // Q1 runs at once
+    }
+    return new Promise<undefined>((resolve) =>
+      signal.addEventListener('abort', () => ((aborted = true), resolve(undefined)), { once: true }),
+    );
+  };
+  const { client, server } = await connectedClient(t, p, upstream);
+
+  const q1 = queryMsg('/* il:req=A */ SELECT 1');
+  const q2 = queryMsg('/* il:req=A */ SELECT 2');
+  client.write(bytes(q1, q2));
+  await server.expectBytes(q1);
+  await waitUntil(() => calls === 2, 'Q2 never reached onQuery');
+  client.socket.resetAndDestroy();
+  await new Promise((r) => setTimeout(r, 50)); // let the proxy see the reset
+  server.write(bytes(commandComplete, readyIdle));
+  await waitUntil(() => aborted, "Q2's signal did not abort after the app reset its connection");
+});
+
+// Every Sync ('S', extended protocol) and FunctionCall ('F') also gets exactly
+// one ReadyForQuery. If an app pipelines a Sync ahead of a Query, the Sync's
+// ReadyForQuery must not be credited to the Query.
+test('SyncTakesAPendingSlot', async (t) => {
+  const finishes: ReadyStatus[] = [];
+  const upstream = await fakeUpstream(t);
+  const p = new PgProxy(upstream.addr);
+  p.onQuery = (_signal, tag) => (tag === '' ? undefined : (status) => finishes.push(status));
+  const { client, server } = await connectedClient(t, p, upstream);
+
+  const sync = bytes('S', [0x00, 0x00, 0x00, 0x04]);
+  const tagged = queryMsg('/* il:req=A */ SELECT 1');
+  client.write(bytes(sync, tagged));
+  await server.expectBytes(bytes(sync, tagged));
+  // Postgres answers the Sync (Z 'T'), then the Query (C, Z 'I').
+  const replies = bytes(readyInTx, commandComplete, readyIdle);
+  server.write(replies);
+  await client.expectBytes(replies);
+  assert.deepEqual(finishes, ['I'], "the Query's done must get its own status, not the Sync's");
+});
+
 // A parked query waits inside onQuery. Shutting the proxy down must abort
 // onQuery's signal so the query gives up, or serve() could never finish.
 test('ShutdownReleasesParkedQuery', async (t) => {
