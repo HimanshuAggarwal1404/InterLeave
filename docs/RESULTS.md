@@ -4,16 +4,61 @@ Measured numbers only. Every entry: date, git commit, machine, exact command. Ne
 never estimate. These numbers feed the README and resume bullets, so they must be reproducible.
 
 ## Machine
-- Intel Core i5-1340P, 15.6 GB RAM, Windows 11 Home (10.0.26200), Go 1.27.1, PostgreSQL 18.6 (native service)
+- Intel Core i5-1340P, 15.6 GB RAM, Windows 11 Home (10.0.26200), PostgreSQL 18.6 (native service)
+- From 2026-10-10: Node.js v24.13.0 (TypeScript implementation). Before: Go 1.27.1 (Go implementation)
 
-## Pass-through overhead (Phase 1)
+## Pass-through overhead, TypeScript implementation (Phase 1, 2026-10-10)
+
+Setup: everything on this laptop at once. A = coupon app straight to Postgres (`--addr
+127.0.0.1:8081 --dsn ...@127.0.0.1:5432/...`), B = app via the TS proxy at 9fccefd (`node
+src/cli/main.ts proxy`, :6433, app on 8082), C = app via the Go proxy built from the same tree
+(`go-final` code, `bin/interleave-go.exe proxy --listen 127.0.0.1:6434`, app on 8083), D = app via
+the TS proxy with TCP_NODELAY, b3d9af3 (`--listen 127.0.0.1:6435`, app on 8084). The app is the
+TypeScript coupon victim in all four. Workload as before: DB reset with `seed.sql`, so every
+measured request is a 409 (BEGIN, SELECT, ROLLBACK = 3 round trips, no locks). 0 errors in every run.
+
+**Latency the proxy adds (1 worker, no queueing): the overhead measure for this implementation.**
+Command: `node src/bench/main.ts --workers 1 --rounds 4 http://127.0.0.1:8081/redeem
+http://127.0.0.1:8082/redeem http://127.0.0.1:8083/redeem http://127.0.0.1:8084/redeem`
+(3s warmup per target, 4 alternating rounds of 10s). p50 values are the median of the 4 rounds' p50s.
+
+| Target | p50 per request | Added vs direct | Added per round trip | Median req/s (min-max) |
+|---|---|---|---|---|
+| A direct | 389 µs | | | 2269.4 (2196.2-2304.9) |
+| B TS proxy (9fccefd) | 570.5 µs | +181.5 µs | ~60 µs | 1535.1 (1452.7-1555.2) |
+| C Go proxy (go-final) | 552 µs | +163 µs | ~54 µs | 1574.6 (1541.1-1726.8) |
+| D TS proxy + TCP_NODELAY (b3d9af3) | 562 µs | +173 µs | ~58 µs | 1550.5 (1523.8-1616.8) |
+
+**Throughput at the default 16 workers.** Command: `node src/bench/main.ts --rounds 4` with the
+same 4 URLs. Medians (min-max): A 5471.5 (5418.9-5571.8), B 5307.6 (5264.3-5490.8), C 5359.0
+(5289.8-5695.3), D 5565.1 (5497.9-5643.7) req/s; B -3.0%, C -2.1%, D +1.7% vs A. p50 2.6-2.9 ms everywhere.
+
+Notes:
+- The 16-worker numbers cannot show proxy overhead: the TypeScript victim runs on one thread and
+  saturates at ~5.5k req/s, so requests queue in the app and the proxy's extra latency is hidden
+  in that queue. The bench itself is not the limit: against a trivial HTTP server it did 14338.1
+  req/s (16 workers, 3s). Probe of the victim alone, direct: 2047.5 req/s with 1 worker, 5776.7
+  with 4, 5655.0 with 10, 5508.2 with 16 (3s each).
+- So the comparable overhead number is the 1-worker added latency: the TS proxy adds ~60 µs per
+  round trip, the Go proxy ~54 µs, on the same machine in the same alternating run. TCP_NODELAY
+  (D vs B) made no difference beyond noise; it is kept because Go sets it by default.
+- Not comparable with the Go-era rows below: those used the Go victim (multi-threaded, ~17-20k
+  req/s direct) and measured added latency at 16 workers.
+- The laptop changes speed between runs: an earlier run of the same 1-worker command (3 targets,
+  19:19) had direct p50 around 0.95 ms in rounds 1-3 and 0.385 ms in round 4. The run above was
+  steady in all 4 rounds (direct 386-394 µs); the very first 16-worker run (19:16) ran at ~2.2k
+  req/s for every target. Trust the alternating within-run comparison, not absolute numbers.
+- Write batching (D-014) carries over: forward tests prove one write per burst, so there was no
+  per-write overhead to fix with cork/uncork.
+
+## Pass-through overhead, historical (Go implementation)
 | Date | Commit | Requests/sec direct | Requests/sec via proxy | Overhead | Command |
 |---|---|---|---|---|---|
 | 2026-10-04 (run 1, setups one after the other) | f3b9be1 (proxy); first version of `cmd/bench`, committed in fd9fddb | 20766.9 median (18593.0-22885.4) | 11346.1 median (10628.9-12039.0) | 45.4% fewer req/s; p50 577µs → 1.259ms | `go run ./cmd/bench` (defaults: 16 workers, 3s warmup, 3 x 10s) |
 | 2026-10-04 (run 2, alternating), old proxy | f3b9be1 (`bin/interleave-old.exe`) | 17575.1 median (15273.1-23735.2) | 9414.3 median (8627.7-10889.9) | 46.4% fewer req/s; p50 695.5µs → 1.673ms | `go run ./cmd/bench --rounds 4 http://localhost:8081/redeem http://localhost:8082/redeem http://localhost:8083/redeem` (old proxy = 8082) |
 | 2026-10-04 (run 2, alternating), new proxy | fd9fddb (write batching) | same run as above | 11348.4 median (10644.5-11716.6) | 35.4% fewer req/s; p50 695.5µs → 1.223ms | same command as above (new proxy = 8083) |
 
-### Before/after: write batching in the proxy (old vs new, run 2)
+### Before/after: write batching in the proxy (old vs new, run 2), historical (Go implementation)
 
 Date: 2026-10-04. Before = commit f3b9be1 (one `Write` per message). After = write batching,
 **fd9fddb**. Both proxies and
@@ -84,6 +129,8 @@ first exposing round, over 6 invocations of `go test ./victims/coupon -run TestR
 redo with a fixed number of rounds per trial before quoting it.
 
 ## Optimisations (Phase 3)
+The two rows below are historical (Go implementation).
+
 | Date | Commit | Optimisation | Metric | Before | After |
 |---|---|---|---|---|---|
 | 2026-10-04 | before f3b9be1, after fd9fddb | Proxy write batching: send messages that arrived together in one `Write` (done in Phase 1, D-014) | req/s through proxy, coupon 409 path, median of 4 alternating rounds | 9414.3 | 11348.4 (+20.5%; faster in 4/4 rounds) |
