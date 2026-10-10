@@ -2,11 +2,13 @@
 # Interleave
 
 Interleave finds race conditions in web apps that use Postgres. It is a command-line testing tool
-(like `go test`), not a website.
+(like a test runner), not a website. It is written in TypeScript and runs on Node.js.
 
-> **Status:** Phase 0 done. Phase 1 in progress: `pgwire` and the pass-through proxy are done. This README explains, in plain words, everything that
-> exists so far and how to try each piece yourself. It is updated as each piece lands.
-> The full plan is in `docs/ROADMAP.md`; the detailed "why" is in `docs/OVERVIEW.md`.
+> **Status:** Phase 0 done. Phase 1 in progress: `pgwire`, the proxy, request tags and the
+> scheduler hook are done; the scheduler's spec and the Phase 1 kill test are written and wait for
+> the scheduler itself. This README explains, in plain words, everything that exists so far and how
+> to try each piece yourself. The full plan is in `docs/ROADMAP.md`; the detailed "why" is in
+> `docs/OVERVIEW.md`; every test command is in `docs/TESTING.md`.
 
 ---
 
@@ -38,18 +40,21 @@ replay that order on demand. Instead of hoping to get unlucky, it tries every or
 
 | # | Piece | What it is | Where |
 |---|---|---|---|
-| 1 | Toolchain | Go 1.27.1, Postgres 18.6 (Windows service), `psql`, 64-bit gcc (needed by `go test -race`) | `go version`, `psql --version` |
+| 1 | Toolchain | Node.js 24, TypeScript (type-checking only), Postgres 18.6 (Windows service), `psql` | `node --version`, `psql --version` |
 | 2 | Coupon victim app | A tiny web app with the coupon bug above, written deliberately | `victims/coupon/` |
-| 3 | Phase 0 exit test | A test proving the bug is real, by hammering the app with 50 requests at once | `victims/coupon/main_test.go` |
-| 4 | `pgwire` (Phase 1, step 1) | Code that cuts the raw bytes between an app and Postgres into individual messages | `internal/pgwire/` |
-| 5 | Pass-through proxy (Phase 1, step 2) | Sits between the app and Postgres and forwards every message unchanged | `internal/proxy/` |
-| 6 | `interleave proxy` command | Runs the proxy from the terminal on port 6433 | `cmd/interleave/` |
-| 7 | Overhead benchmark | Measures requests/sec with and without the proxy (results in `docs/RESULTS.md`) | `cmd/bench/` |
-| 8 | Request tags (Phase 1, step 3) | Each statement says which HTTP request it belongs to; the proxy reads it | `internal/proxy/tag.go`, `victims/coupon/` |
-| 8b | Step done (Phase 1, step 4) | The proxy tells its hook when each statement has finished, and how (`ReadyForQuery` status) | `internal/proxy/proxy.go`, `internal/pgwire/ready.go` |
+| 3 | Phase 0 exit test | A test proving the bug is real, by hammering the app with 50 requests at once | `victims/coupon/app.test.ts` |
+| 4 | `pgwire` | Code that cuts the raw bytes between an app and Postgres into individual messages | `src/pgwire/` |
+| 5 | Pass-through proxy | Sits between the app and Postgres and forwards every message unchanged | `src/proxy/` |
+| 6 | `interleave proxy` command | Runs the proxy from the terminal on port 6433 | `src/cli/` |
+| 7 | Overhead benchmark | Measures requests/sec and latency with and without the proxy (results in `docs/RESULTS.md`) | `src/bench/` |
+| 8 | Request tags | Each statement says which HTTP request it belongs to; the proxy reads it | `src/proxy/tag.ts`, `victims/coupon/` |
+| 8b | Step done | The proxy tells its hook when each statement has finished, and how (`ReadyForQuery` status) | `src/proxy/proxy.ts`, `src/pgwire/ready.ts` |
 | 8c | `--fixed` coupon | The correct version of the app (`SELECT ... FOR UPDATE`), proven by blasting | `victims/coupon/` |
-| 8d | Scheduler spec + kill test | Tests written before the scheduler: what it must do, and the Phase 1 exit test | `internal/sched/sched_test.go`, `victims/coupon/kill_test.go` |
-| 9 | Project docs | Spec, architecture, roadmap, decisions, overview, results | `docs/` |
+| 8d | Scheduler spec + kill test | Tests written before the scheduler: what it must do, and the Phase 1 exit test | `src/sched/sched.spec.ts`, `victims/coupon/kill.spec.ts` |
+| 9 | Project docs | Spec, architecture, roadmap, decisions, overview, results, testing | `docs/` |
+
+The project was first written in Go and moved to TypeScript (decision D-020): same design, same
+behaviour, same tests. The Go version is kept in git under the tag `go-final`.
 
 The order-trying engine (scheduler, explorer, invariant checker) does not exist yet. So far we
 have the **test subject** (the buggy app), **proof the bug is real**, and the **proxy** that
@@ -60,15 +65,16 @@ and when each one finishes, but nothing holds statements back yet: that is the s
 
 A "victim" is a small app that is buggy on purpose, so Interleave has something to find. Its files:
 
-- `main.go`: a web server with one endpoint, `POST /redeem`, taking `{"code": "DIWALI50", "user_id": 1}`.
-  Inside a transaction it runs:
+- `app.ts`: a web server handler with one endpoint, `POST /redeem`, taking
+  `{"code": "DIWALI50", "user_id": 1}`. Inside a transaction it runs:
   ```sql
   SELECT uses, max_uses FROM coupons WHERE code = 'DIWALI50';   -- the check
-  -- (in Go) if uses >= max_uses → reply "coupon already used up"
+  -- (in TypeScript) if uses >= max_uses → reply "coupon already used up"
   UPDATE coupons SET uses = uses + 1 WHERE code = 'DIWALI50';   -- the act
   INSERT INTO redemptions (code, user_id) VALUES ('DIWALI50', 1);
   COMMIT;
   ```
+- `main.ts`: reads the flags and starts the HTTP server on `127.0.0.1:8081`.
 - `seed.sql`: creates two tables (`coupons`, `redemptions`) if they do not exist and resets them
   to one unused, single-use coupon. Run it before every attempt to start clean.
 - `README.md`: the bug, the bad order step by step, and the fix.
@@ -81,31 +87,32 @@ read the row while request A is still between its check and its update. Both see
 `SELECT ... FOR UPDATE` locks the row, so B has to wait until A commits, and then sees
 `uses = 1`. Later, Interleave must show the buggy version breaks in some order and the fixed
 version holds in **every** order. That before/after proof is the product.
-`TestFixedNeverOverRedeems` blasts the fixed version the same way `TestRaceIsReal` blasts the
+`FixedNeverOverRedeems` blasts the fixed version the same way `RaceIsReal` blasts the
 buggy one (20 rounds of 50 requests): it must never over-redeem, and exactly one request wins.
 
-**How it connects to Postgres:** by default to port **6433**, where Interleave's proxy listens
-(start it with `interleave proxy`, see "Try it yourself" Step 6). Pass `--dsn` with port
-**5432** to skip the proxy and talk to Postgres directly. The connection string also has `default_query_exec_mode=simple_protocol`; see
-"Simple vs extended protocol" in the glossary for why.
+**How it connects to Postgres:** by default to port **6433** on `127.0.0.1`, where Interleave's
+proxy listens (start it with `interleave proxy`, see "Try it yourself" Step 6). Pass `--dsn` with
+port **5432** to skip the proxy and talk to Postgres directly. The app sends every statement as
+plain text, never with separate parameter values; see "Simple vs extended protocol" in the
+glossary for why. Values are still inserted safely: text through node-postgres's `escapeLiteral`,
+numbers only after checking they are whole numbers.
 
-### 3. The Phase 0 exit test (`TestRaceIsReal`)
+### 3. The Phase 0 exit test (`RaceIsReal`)
 
 Each phase of the roadmap ends with an "exit test" that must pass before moving on. Phase 0's
 question: *is the bug real, without any Interleave magic?*
 
 What the test does, round by round (up to 20 rounds):
 1. Run `seed.sql`, so the coupon is fresh (`uses = 0`, `max_uses = 1`).
-2. Start 50 goroutines (lightweight Go threads), one per fake customer. Each waits at a
-   "starting gate" (a channel). Closing the channel releases all 50 at the same instant, which
-   maximises the chance of overlap.
-3. Wait for all of them (a `sync.WaitGroup`), then ask Postgres: is `uses` greater than `max_uses`?
+2. Fire 50 redeem requests at once. One loop starts all 50 before any of them gets to run
+   (JavaScript runs one piece of code at a time), so they hit the app together.
+3. Wait for all of them, then ask Postgres: is `uses` greater than `max_uses`?
 4. If yes, the bug happened: log it and pass. If 20 rounds go by without it, fail.
 
 Typical output:
 ```
-main_test.go:40: round 2: single-use coupon redeemed 4 times (4 redemption rows)
---- PASS: TestRaceIsReal
+✔ RaceIsReal (348.3217ms)
+ℹ round 2: single-use coupon redeemed 7 times (7 redemption rows)
 ```
 It usually triggers in round 2. In round 1 the app is still opening database connections, which
 spreads the requests out in time.
@@ -113,17 +120,17 @@ spreads the requests out in time.
 This "blast it and hope" approach is exactly what Interleave replaces: it is luck-based, and when
 it fails it tells you nothing about *which* order caused the bug.
 
-### 4. `pgwire`: reading the Postgres language (`internal/pgwire/`)
+### 4. `pgwire`: reading the Postgres language (`src/pgwire/`)
 
 To hold SQL statements at a red light, the proxy must understand the bytes flowing between the
 app and Postgres. Those bytes follow the **Postgres wire protocol**, a fixed binary format. `pgwire`
 is the part that turns a raw stream of bytes into separate messages. It only *reads and labels*
-messages; deciding what to do with them is the proxy's job (next step).
+messages; deciding what to do with them is the proxy's job.
 
 **The problem it solves.** A network connection (TCP) is one long stream of bytes with no gaps
-between messages. If the app sends two messages, they may arrive glued together or split in
-odd places. Postgres solves this by putting a **length** in front of every message, so the
-reader always knows where one ends and the next begins.
+between messages. Node hands the proxy that stream in **chunks** of whatever size arrived: half a
+message, or three and a half. Postgres solves this by putting a **length** in front of every
+message, so the reader always knows where one ends and the next begins.
 
 **Shape 1: a regular message** (almost everything):
 ```
@@ -146,39 +153,41 @@ just a length and a 4-byte **code** saying what kind of packet it is:
 | 196608 | StartupMessage, protocol 3.0, followed by `user`, `database`, ... settings |
 | 196610 | StartupMessage, protocol 3.2 (new in Postgres 18) |
 
-**What the code gives you:**
-- `ReadMessage(r)` → `Message{Type, Body, Raw}`
-- `ReadStartup(r)` → `Startup{Code, Params, Raw}`
+**What the code gives you:** a `WireReader`, one per connection, wrapped around the socket:
+- `await reader.readMessage()` → `{ type, body, raw }`, or `null` when the connection ended cleanly
+- `await reader.readStartup()` → `{ code, params, raw }`
 
-`Raw` is every byte exactly as received. The proxy will forward `Raw` unchanged instead of
-rebuilding the message, which is simpler and cannot introduce encoding bugs. `Body` is not a
-copy: it points into the same memory as `Raw` (a Go "sub-slice").
+It keeps the chunks it has received but not yet handed out, and returns only whole messages.
+`raw` is every byte exactly as received. The proxy forwards `raw` unchanged instead of rebuilding
+the message, which is simpler and cannot introduce encoding bugs. `body` is not a copy: it is a
+view into the same memory as `raw`.
 
 **Safety checks.** A length that is impossible (smaller than the header) or absurd (over 1 GiB
 for messages, over 10,000 bytes for startup packets, the same limits Postgres uses) is rejected
-*before* any memory is allocated. If the connection ends cleanly between messages you get
-`io.EOF` ("they hung up"). If it ends in the middle of a message you get
-`io.ErrUnexpectedEOF` ("the line dropped").
+as soon as the length arrives, before waiting for or keeping any of the body. If the connection
+ends cleanly between messages you get `null` ("they hung up"). If it ends in the middle of a
+message you get an `UnexpectedEOFError` ("the line dropped").
 
 **Where the test bytes came from.** The tests use real bytes captured on this machine. A
 throwaway program pretended to be a server, `psql` connected to it, and it recorded what
 `psql` sent (an SSLRequest, then a StartupMessage with `user=interleave database=interleave
 application_name=psql`). It also recorded Postgres 18.6's first reply: an `R` message saying
-"prove your password with SCRAM-SHA-256". The other te st messages are built by hand from the
-official protocol docs, with a comment on each explaining every byte.
+"prove your password with SCRAM-SHA-256". The other test messages are built by hand from the
+official protocol docs, with a comment on each explaining every byte. Every case is also fed to
+the reader **one byte per chunk**, the worst way a socket could deliver it.
 
 **The Postgres 18 gotcha.** In protocol 3.2 the `K` message (server process ID + secret key) can
 have a key up to 256 bytes instead of always 4. Code that assumes "`K` is always 12 bytes" breaks.
 `pgwire` never assumes sizes; it always trusts the length field, and a test checks this.
 
-### 5. The pass-through proxy (`internal/proxy/`, `cmd/interleave/`)
+### 5. The pass-through proxy (`src/proxy/`, `src/cli/`)
 
 The proxy is a middleman. The app thinks it is talking to Postgres, but it is talking to
 Interleave on port 6433, which passes everything on to the real Postgres on 5432 and passes the
 answers back:
 
 ```
-coupon app ──► interleave proxy (localhost:6433) ──► Postgres (localhost:5432)
+coupon app ──► interleave proxy (127.0.0.1:6433) ──► Postgres (127.0.0.1:5432)
            ◄──                                  ◄──
 ```
 
@@ -187,57 +196,64 @@ Interleave holds statements back, it must prove it can sit in the middle without
 anything. Later, the "hold at the red light" logic goes inside it.
 
 **What happens when an app connects:**
-1. **Accept.** Each new connection gets its own goroutine, so many apps or pool connections
-   can be served at once.
-2. **Startup.** Read the first packet with `pgwire.ReadStartup`.
+1. **Accept.** Each new connection gets its own async function, so many apps or pool
+   connections are served at once. (Node runs one thing at a time, but while one connection
+   waits for bytes, the others run.)
+2. **Startup.** Read the first packet with the connection's `WireReader`.
    - If it asks "can we encrypt?" (SSLRequest), the proxy itself answers `N` (no), and the app
      carries on unencrypted. Encryption would turn the messages into unreadable noise, and
      the proxy must read them. Everything stays on your own machine anyway.
    - If it is a CancelRequest ("stop that slow query"), forward it to Postgres and hang up.
    - Otherwise it is the real StartupMessage: connect to Postgres and forward it unchanged.
-3. **Pump.** Two goroutines: one copies app → Postgres, the other Postgres → app, one
-   message at a time with `pgwire.ReadMessage`. The login (SCRAM password exchange) flows
-   through untouched. The proxy never sees or needs the password.
+3. **Pump.** Two loops: one copies app → Postgres, the other Postgres → app, one message at a
+   time. The login (SCRAM password exchange) flows through untouched. The proxy never sees or
+   needs the password.
 4. **Send in batches.** Postgres sends a whole reply (columns, rows, "done", "ready") in one
    go. The proxy reads those messages one by one, but collects them and sends them on together
-   as soon as nothing more is already waiting to be read. The first version sent each message
-   separately, which made the app about 45% slower (see `docs/RESULTS.md`). It never holds
-   bytes back while waiting for more input, so batching cannot cause a hang.
+   in one write, as soon as nothing more is already waiting to be read. The first (Go) version
+   sent each message separately, which made the app about 45% slower (see `docs/RESULTS.md`). It
+   never holds bytes back while waiting for more input, so batching cannot cause a hang. If the
+   other side reads slowly (the write reports a full buffer), the pump waits until it drains
+   instead of piling up data in memory.
 
-**Who closes what (the tricky part).** A goroutine waiting in `Read` cannot notice that the
-other direction has finished. So the rule is: *whichever pump stops first closes both
-connections*. Closing a connection makes the other pump's waiting `Read` fail at once, so it
-stops too. Shutdown (Ctrl+C) uses the same trick: close the listener (no new connections) and
-every app connection, then wait until every goroutine has exited. If `Serve` returns, nothing
-is left running. The tests check this.
+**Who closes what (the tricky part).** A pump waiting for bytes from one side cannot notice that
+the other direction has finished. So the rule is: *whichever pump stops first closes both
+connections*. Closing a connection ends the other pump's wait at once, so it stops too. Shutdown
+(Ctrl+C) uses the same trick: stop accepting new connections, close every app connection (closing
+the listening server alone would leave open connections running), then wait until every socket
+is really closed. If `serve()` has returned, nothing is left running. The tests check this,
+including that no socket or timer is left open.
 
 **Safety, built into the code:**
 - It only forwards to **this machine** (`localhost`, `127.0.0.1` or `::1`). Any other upstream
   address is refused with an error, so Interleave cannot be pointed at someone's real database.
-- It listens on **`localhost:6433`** by default, not `:6433`. In Go, `:6433` means "every
-  network interface", which would let anyone on your Wi-Fi reach your Postgres through the
-  proxy. Postgres would also see those connections as coming from localhost.
+- It listens on **`127.0.0.1:6433`** by default, not on every network interface, which would let
+  anyone on your Wi-Fi reach your Postgres through the proxy. Postgres would also see those
+  connections as coming from localhost. The address is written as `127.0.0.1` rather than
+  `localhost` on purpose: Node may turn `localhost` into the IPv6 address `::1`.
 
-**How it is tested** (`internal/proxy/proxy_test.go`, 8 tests; `forward_test.go`, 3 tests):
+**How it is tested** (`src/proxy/proxy.test.ts`, 15 tests; `forward.test.ts`, 5 tests):
 - With a **fake Postgres** (a socket the test controls): SSL gets `N`; the startup, the
   server's replies, a query and the goodbye are each forwarded byte for byte; if Postgres hangs
   up, the app's connection closes; a CancelRequest is forwarded; an unreachable Postgres
-  closes the app's connection instead of hanging; shutdown closes open connections.
-- With your **real Postgres 18**: pgx connects through the proxy, logs in with SCRAM, runs 20
-  queries at once over 5 connections and does a transaction. It does this twice: once with
-  `sslmode=disable` and once with `sslmode=prefer` (which sends the SSL request).
-- `forward` on its own: a burst of messages leaves in one write, and a complete message is
-  sent at once even when only half of the next one has arrived, and anything held back is sent
-  before the `OnQuery` hook sees the next message (the hook may block once the scheduler exists).
-- All of it passes 20 times in a row under `go test -race`.
+  closes the app's connection instead of hanging; shutdown closes open connections and leaves no
+  socket or timer behind; an app that drops its connection while a query is held releases that
+  query.
+- With your **real Postgres 18**: node-postgres connects through the proxy, logs in with SCRAM,
+  runs 20 queries at once over 5 connections and does a transaction. Then `psql` connects through
+  it with `sslmode=prefer`, which sends the SSL request first and must get the `N`.
+- `forward` on its own: a burst of messages leaves in one write; a complete message is sent at
+  once even when only half of the next one has arrived; anything held back is sent before the
+  `onQuery` hook sees the next message (the hook may wait once the scheduler exists); and a slow
+  reader makes it wait instead of buffering without limit.
+- All of it passes 20 times in a row (`npm run test:repeat`).
 
-**The command** (`cmd/interleave/main.go`): `interleave proxy [--listen ...] [--upstream ...] [--verbose]`
-(`--verbose` logs every query with its request tag, see Step 7).
-Exit code 2 means you gave it bad input (unknown command, remote upstream, port in use), 3 an
-internal error. `signal.NotifyContext` turns Ctrl+C into a cancelled `context`, which triggers
+**The command** (`src/cli/interleave.ts`): `interleave proxy [--listen ...] [--upstream ...] [--verbose]`
+(`--verbose` logs every query with its request tag, see Step 7). Exit code 2 means you gave it
+bad input (unknown command, remote upstream, port in use), 3 an internal error. Ctrl+C triggers
 the clean shutdown described above.
 
-### 6. Request tags (`internal/proxy/tag.go`, `victims/coupon/`)
+### 6. Request tags (`src/proxy/tag.ts`, `victims/coupon/`)
 
 To control the order of statements, Interleave must know **which HTTP request each statement
 belongs to**. The connection does not tell us: a pool hands the same connection to different
@@ -246,149 +262,156 @@ requests (D-004). So the requests carry a name:
 1. Interleave sends each request with a header, e.g. `X-Interleave-Req: A`.
 2. The app puts that name in a SQL comment at the start of every statement:
    `/* il:req=A */ SELECT uses, max_uses FROM coupons ...`. Postgres ignores comments.
-3. The proxy reads the comment (`requestTag`) and reports `(tag, sql)` through its `OnQuery`
-   hook. The scheduler will plug in there to hold statements: while the hook blocks, the
-   statement waits.
+3. The proxy reads the comment (`requestTag`) and reports `(tag, sql)` through its `onQuery`
+   hook. The scheduler will plug in there to hold statements: while the Promise the hook returns
+   is still pending, the statement waits.
 4. When Postgres finishes a statement it sends `ReadyForQuery` (`Z`) with a status byte: `I`
    idle, `T` inside a transaction, `E` inside a failed one. The hook may return a `done`
    function for the statement; the proxy calls it with that status once the `Z` has reached
    the app, so the scheduler knows the step is over (D-017). Postgres answers a connection's
    statements in order, so a per-connection queue pairs each `Z` with its statement.
 
-Rules (D-015, D-016):
+Rules (D-015, D-016, D-021):
 - The tag counts **only at the very start** of the query, so text inside a value (say a user
   name `'/* il:req=A */'`) cannot pretend to be a tag.
 - A tag is 1-64 of `A-Z a-z 0-9 _ -`. The app **rejects any other header with 400**: the header
   is pasted into SQL, so `A */ DROP TABLE coupons; --` would otherwise be SQL injection.
-- The coupon app tags `BEGIN` and `COMMIT` too, through `pgx.TxOptions`. pgx's `rollback` cannot
-  be tagged, so it passes through unscheduled, like pgx's `-- ping` health checks.
+- The coupon app tags every statement it sends, `BEGIN`, `COMMIT` and `ROLLBACK` included.
+  Statements an app cannot tag pass through unscheduled.
 
-**How it is tested:** `TestQueryString` (pgwire, 7 cases) and `TestRequestTag` (17 cases) for
-the parsing; `TestOnQueryReportsTags` checks the hook sees each query, before it is forwarded;
-`TestQueriesCarryRequestTag` runs the coupon app through a real proxy and checks exactly which
-statements carry which tag. For "step done": `TestReadyStatus` (7 cases),
-`TestForwardReportsReadyAfterSendingIt`, `TestDoneGetsEachQuerysReadyStatus` (including two
-statements sent before either reply) and `TestShutdownReleasesParkedQuery`.
+**How it is tested:** `QueryString` (pgwire, 7 cases) and `RequestTag` (17 cases) for
+the parsing; `OnQueryReportsTags` checks the hook sees each query, before it is forwarded;
+`OnQueryAsyncHookParks` checks a query waits while the hook's Promise is pending;
+`QueriesCarryRequestTag` runs the coupon app through a real proxy and checks exactly which
+statements carry which tag; `StatementsUseSimpleProtocol` records every message the app sends on
+the wire. For "step done": `ReadyStatus` (7 cases), `ForwardReportsReadyAfterSendingIt`,
+`DoneGetsEachQuerysReadyStatus` (including two statements sent before either reply) and
+`ShutdownReleasesParkedQuery`.
 
 ---
 
 ## Try it yourself
 
-Run everything from **Git Bash** in the repo folder.
+Run everything from **Git Bash** in the repo folder. The first time, install the project's
+packages (they go into `node_modules/` inside the project only):
+```bash
+npm install
+```
 
 ### Step 1: check the tools
 ```bash
-go version            # go1.27.1 windows/amd64
+node --version        # v24.13.0 (22.18 or newer works)
 psql --version        # psql (PostgreSQL) 18.6
-gcc -dumpmachine      # x86_64-w64-mingw32   (64-bit, needed for -race)
 ```
 
 ### Step 2: run every test
 ```bash
-go test ./...
+npx tsc --noEmit      # type-check: prints nothing when everything is fine
+npm test
 ```
-Expected: `ok` lines for `cmd/interleave`, `internal/pgwire`, `internal/proxy` and `victims/coupon`.
+Expected: about 130 tests, `ℹ fail 0`, in a few seconds. The tests that need Postgres skip
+themselves if it is not running.
 
-Now the same with Go's race detector switched on:
+Node has no race detector like Go's `-race`; instead the concurrent parts are run 20 times in a
+row (see `docs/TESTING.md` for why):
 ```bash
-go test -race ./...
+npm run test:repeat
 ```
-Same `ok` lines, a bit slower.
 
 ### Step 3: watch the coupon bug happen
 ```bash
-go test ./victims/coupon -run TestRaceIsReal -v -count=1
+node --test --test-name-pattern=RaceIsReal victims/coupon/app.test.ts
 ```
-`-v` shows the log lines and `-count=1` stops Go from reusing a cached result. Look for
-`single-use coupon redeemed N times`, where N is bigger than 1. Run it a few times: N changes,
-because it depends on timing.
+Look for `single-use coupon redeemed N times`, where N is bigger than 1. Run it a few times: N
+changes, because it depends on timing.
 
 Now the same blast against the fixed version, which must hold every time:
 ```bash
-go test ./victims/coupon -run TestFixedNeverOverRedeems -v -count=1
+node --test --test-name-pattern=FixedNeverOverRedeems victims/coupon/app.test.ts
 ```
 
 ### Step 4: use the app by hand
 Terminal 1, reset the data and start the app talking straight to Postgres:
 ```bash
-psql "postgresql://interleave:interleave@localhost:5432/interleave" -f victims/coupon/seed.sql
-go run ./victims/coupon --dsn "postgres://interleave:interleave@localhost:5432/interleave?sslmode=disable&default_query_exec_mode=simple_protocol"
+psql "postgresql://interleave:interleave@127.0.0.1:5432/interleave" -f victims/coupon/seed.sql
+node victims/coupon/main.ts --dsn "postgres://interleave:interleave@127.0.0.1:5432/interleave?sslmode=disable"
 ```
 (Two `NOTICE: relation ... already exists, skipping` lines are harmless.) Wait for
-`coupon victim listening on http://localhost:8081`.
+`coupon victim listening on http://127.0.0.1:8081`.
 
 Terminal 2, redeem twice:
 ```bash
-curl -X POST localhost:8081/redeem -d '{"code":"DIWALI50","user_id":1}'   # → redeemed
-curl -X POST localhost:8081/redeem -d '{"code":"DIWALI50","user_id":2}'   # → coupon already used up
+curl -X POST http://127.0.0.1:8081/redeem -d '{"code":"DIWALI50","user_id":1}'   # → redeemed
+curl -X POST http://127.0.0.1:8081/redeem -d '{"code":"DIWALI50","user_id":2}'   # → coupon already used up
 ```
 Look inside the database:
 ```bash
-psql "postgresql://interleave:interleave@localhost:5432/interleave" -c "SELECT * FROM coupons" -c "SELECT * FROM redemptions"
+psql "postgresql://interleave:interleave@127.0.0.1:5432/interleave" -c "SELECT * FROM coupons" -c "SELECT * FROM redemptions"
 ```
 You should see `uses = 1` and one redemption row. One at a time, the app is correct.
 
 Now try to break it by hand. Reset, then fire 20 requests "at once":
 ```bash
-psql "postgresql://interleave:interleave@localhost:5432/interleave" -f victims/coupon/seed.sql
-for i in $(seq 1 20); do curl -s -X POST localhost:8081/redeem -d "{\"code\":\"DIWALI50\",\"user_id\":$i}" & done; wait
+psql "postgresql://interleave:interleave@127.0.0.1:5432/interleave" -f victims/coupon/seed.sql
+for i in $(seq 1 20); do curl -s -X POST http://127.0.0.1:8081/redeem -d "{\"code\":\"DIWALI50\",\"user_id\":$i}" & done; wait
 ```
 **You will almost certainly see only one `redeemed`.** On Windows each `curl` is a separate
 program that takes milliseconds to start, so the requests arrive one after another and never
 overlap. When we tried it: 1 redeemed, 19 rejected. The bug is there, but this test is too slow
-to hit it. The Go test in Step 3 gets the overlap only because its 50 goroutines start within
-microseconds. This is the core problem Interleave solves: it will not depend on luck or speed.
+to hit it. The test in Step 3 gets the overlap only because it starts its 50 requests from one
+program within microseconds. This is the core problem Interleave solves: it will not depend on
+luck or speed.
 
 Stop the app with `Ctrl+C` in terminal 1.
 
 ### Step 5: poke at `pgwire`
 ```bash
-go test ./internal/pgwire -v
+node --test src/pgwire/*.test.ts
 ```
-Every case is listed by name, e.g. `TestReadMessage/AuthenticationSASL_(captured)`.
+Every case is listed by name, e.g. `ReadyForQuery idle, one byte per chunk`.
 
-A good exercise: open `internal/pgwire/message_test.go`, find the `ReadyForQuery idle` case,
+A good exercise: open `src/pgwire/message.test.ts`, find the `ReadyForQuery idle` case,
 and change its length byte `0x05` to `0x06`. Run the tests again. The message now claims one
-more byte than it has, so `ReadMessage` reports `unexpected EOF` and the test fails. Undo with:
+more byte than it has, so `readMessage` reports an `UnexpectedEOFError` and the test fails. Undo
+with:
 ```bash
-git checkout internal/pgwire/message_test.go
+git checkout src/pgwire/message.test.ts
 ```
-(Once this is committed. Until then, just change `0x06` back to `0x05`.)
 
 ### Step 6: run the app through the proxy
 Terminal 1, start the proxy:
 ```bash
-go run ./cmd/interleave proxy
+npm run proxy
 ```
-It prints `interleave proxy: 127.0.0.1:6433 -> localhost:5432 (Ctrl+C to stop)`.
+It prints `interleave proxy: 127.0.0.1:6433 -> 127.0.0.1:5432 (Ctrl+C to stop)`.
 
 Terminal 2, reset the data and start the coupon app **without** `--dsn`, so it uses its default,
 port 6433, the proxy:
 ```bash
-psql "postgresql://interleave:interleave@localhost:5432/interleave" -f victims/coupon/seed.sql
-go run ./victims/coupon
+psql "postgresql://interleave:interleave@127.0.0.1:5432/interleave" -f victims/coupon/seed.sql
+npm run coupon
 ```
 
 Terminal 3, the same two redeems as Step 4:
 ```bash
-curl -X POST localhost:8081/redeem -d '{"code":"DIWALI50","user_id":1}'   # → redeemed
-curl -X POST localhost:8081/redeem -d '{"code":"DIWALI50","user_id":2}'   # → coupon already used up
+curl -X POST http://127.0.0.1:8081/redeem -d '{"code":"DIWALI50","user_id":1}'   # → redeemed
+curl -X POST http://127.0.0.1:8081/redeem -d '{"code":"DIWALI50","user_id":2}'   # → coupon already used up
 ```
 The app behaves exactly as before. That is the goal: the proxy is invisible.
 
 `psql` can go through the proxy too (port 6433). psql asks for SSL first, so this also shows the
 `N` reply working with a real client:
 ```bash
-psql "postgresql://interleave:interleave@localhost:6433/interleave" -c "SELECT code, uses, max_uses FROM coupons"
+psql "postgresql://interleave:interleave@127.0.0.1:6433/interleave" -c "SELECT code, uses, max_uses FROM coupons"
 ```
 
 And the 50-request race test, through the proxy instead of direct:
 ```bash
-INTERLEAVE_TEST_DSN="postgres://interleave:interleave@localhost:6433/interleave?sslmode=disable&default_query_exec_mode=simple_protocol" \
-  go test ./victims/coupon -run TestRaceIsReal -v -count=1
+INTERLEAVE_TEST_DSN="postgres://interleave:interleave@127.0.0.1:6433/interleave?sslmode=disable" \
+  node --test --test-name-pattern=RaceIsReal victims/coupon/app.test.ts
 ```
 It still finds the double-redeem: a pass-through proxy neither hides nor causes the bug. When
-we ran it: `round 2: single-use coupon redeemed 4 times`.
+we ran it: `round 2: single-use coupon redeemed 8 times`.
 
 Finally, press **Ctrl+C** in terminal 1. The proxy prints `interleave proxy: stopped`. Since the
 coupon app's connections are cut, its next request will fail until the proxy is back.
@@ -396,42 +419,42 @@ coupon app's connections are cut, its next request will fail until the proxy is 
 ### Step 7: watch the request tags
 Same three terminals as Step 6, but start the proxy with `--verbose`, which logs every query:
 ```bash
-go run ./cmd/interleave proxy --verbose
+npm run proxy -- --verbose
 ```
 Reset and start the app (terminal 2) as in Step 6, then send two named requests (terminal 3):
 ```bash
-curl -X POST localhost:8081/redeem -H "X-Interleave-Req: A" -d '{"code":"DIWALI50","user_id":1}'
-curl -X POST localhost:8081/redeem -H "X-Interleave-Req: B" -d '{"code":"DIWALI50","user_id":2}'
+curl -X POST http://127.0.0.1:8081/redeem -H "X-Interleave-Req: A" -d '{"code":"DIWALI50","user_id":1}'
+curl -X POST http://127.0.0.1:8081/redeem -H "X-Interleave-Req: B" -d '{"code":"DIWALI50","user_id":2}'
 ```
 Terminal 1 shows each statement with its request (when we ran it):
 ```
+query [-] SELECT 1
 query [A] /* il:req=A */ BEGIN
 query [A] /* il:req=A */ SELECT uses, max_uses FROM coupons WHERE code = 'DIWALI50'
 query [A] /* il:req=A */ UPDATE coupons SET uses = uses + 1 WHERE code = 'DIWALI50'
-query [A] /* il:req=A */ INSERT INTO redemptions (code, user_id) VALUES ( 'DIWALI50' , '1' )
+query [A] /* il:req=A */ INSERT INTO redemptions (code, user_id) VALUES ('DIWALI50', 1)
 query [A] /* il:req=A */ COMMIT
 query [B] /* il:req=B */ BEGIN
 query [B] /* il:req=B */ SELECT uses, max_uses FROM coupons WHERE code = 'DIWALI50'
-query [-] rollback
+query [B] /* il:req=B */ ROLLBACK
 ```
-`[-]` means untagged. You will also see `query [-] -- ping` now and then: the connection pool
-checking its connections. A bad header is refused before any SQL runs:
+`[-]` means untagged: the `SELECT 1` is the app checking at startup that it can reach Postgres.
+A bad header is refused before any SQL runs:
 ```bash
-curl -X POST localhost:8081/redeem -H "X-Interleave-Req: A */ DROP TABLE coupons; --" -d '{"code":"DIWALI50","user_id":3}'
+curl -X POST http://127.0.0.1:8081/redeem -H "X-Interleave-Req: A */ DROP TABLE coupons; --" -d '{"code":"DIWALI50","user_id":3}'
 # → invalid X-Interleave-Req header
 ```
 
 ---
 
-## Two different "race detectors": do not mix them up
+## Two different kinds of "race": do not mix them up
 
-| | `go test -race` | Interleave |
+| | Races in Interleave's own code | Races Interleave finds |
 |---|---|---|
-| Finds | Two **goroutines in Go code** touching the same variable without a lock | Two **HTTP requests** whose SQL statements interleave badly in the **database** |
-| How | Go adds checks to every memory access while the program runs | A proxy holds SQL statements and replays them in chosen orders |
-| Would it catch the coupon bug? | **No.** The Go code has no shared variable; the shared thing is a database row | **Yes**, that is its whole job |
+| What | Interleave's async code running in an unlucky order (Node runs one thing at a time, but at every `await` other code can run) | Two **HTTP requests** whose SQL statements interleave badly in the **database** |
+| How we check | Tests for each ordering rule, the concurrent suites run 20 times in a row, and checks that nothing is left open or hangs (`docs/TESTING.md`) | A proxy holds SQL statements and releases them in chosen orders |
+| Would it catch the coupon bug? | **No.** The app's code has no shared variable; the shared thing is a database row | **Yes**, that is its whole job |
 
-We use `go test -race` to check *Interleave's own* code (the proxy will be heavily concurrent).
 This is a likely interview question.
 
 ---
@@ -456,16 +479,21 @@ This is a likely interview question.
 - **Wire protocol**: the exact byte format two programs use to talk over the network.
 - **Simple vs extended protocol**: two ways to send SQL to Postgres. Simple sends a whole query
   in one `Q` message, which is easy to hold and release. Extended splits it into several
-  messages (Parse/Bind/Execute). The MVP only schedules simple-protocol queries, so victim apps
-  force `simple_protocol`.
+  messages (Parse/Bind/Execute) and is what node-postgres uses when a query has separate values
+  (`$1`). The MVP only schedules simple-protocol queries, so victim apps send plain text.
 - **Connection pool**: the app keeps a few database connections open and reuses them, instead
   of connecting per request.
 - **Request tag**: the name (A, B, ...) Interleave gives each HTTP request. The app copies it
   into a SQL comment, `/* il:req=A */`, so the proxy knows which request a statement is from.
 - **SQL injection**: user input pasted into SQL that changes what the SQL does. Why the app
-  checks the tag header before using it.
-- **Goroutine / channel / WaitGroup**: Go's lightweight thread / a pipe for passing values (or
-  signals) between goroutines / a counter for waiting until a group of goroutines is done.
+  checks the tag header before using it, and escapes the coupon code.
+- **Promise / async / await**: a Promise is a value that arrives later; `await` pauses one
+  function until it arrives, while the rest of the program keeps running. A statement "held at
+  the red light" is simply a Promise that has not been resolved yet.
+- **AbortSignal**: a "please stop" flag that can be handed to anything that waits; used for
+  shutdown and for giving up on a connection that went away.
+- **Backpressure**: when the receiver is slower than the sender, the sender waits instead of
+  piling up data in memory.
 
 ---
 
@@ -473,14 +501,17 @@ This is a likely interview question.
 
 ```
 README.md                 this file
-go.mod, go.sum            Go module "interleave" and its one dependency (pgx, the Postgres driver)
-docs/                     SPEC, ARCHITECTURE, ROADMAP, DECISIONS, OVERVIEW, RESULTS
-cmd/interleave/           the interleave command (today: just `interleave proxy`)
-internal/pgwire/          message framing + startup packets (Phase 1, step 1)
-internal/proxy/           pass-through proxy (Phase 1, step 2), request tags, step done
-internal/sched/           scheduler spec as tests (sched_test.go); the code comes next  ← newest
-cmd/bench/                load generator for the proxy overhead measurement
+package.json, package-lock.json   the project's npm scripts and its few packages (pg, typescript, types)
+tsconfig.json             TypeScript settings (type-checking only; Node runs the .ts files itself)
+docs/                     SPEC, ARCHITECTURE, ROADMAP, DECISIONS, OVERVIEW, RESULTS, TESTING
+src/cli/                  the interleave command (today: just `interleave proxy`)
+src/pgwire/               message framing + startup packets
+src/proxy/                pass-through proxy, request tags, step done
+src/sched/                scheduler spec as tests (sched.spec.ts) and its skeleton; the code comes next  ← newest
+src/bench/                load generator for the proxy overhead measurement
+src/testutil/             small helpers shared by the tests
 victims/coupon/           the buggy coupon app (+ --fixed), seed data, README, exit + kill tests
+scripts/repeat.ts         runs the concurrent test suites 20 times in a row
 docker-compose.yml        only for other people / the final demo; not used on this machine
 ```
 
@@ -490,11 +521,11 @@ docker-compose.yml        only for other people / the final demo; not used on th
 
 1. ~~**Proxy, pass-through mode**~~: done (section 5 above).
 2. ~~**Overhead**: measure how much slower requests are through the proxy than direct~~: done
-   (`docs/RESULTS.md`; write batching made the proxy 20.5% faster).
+   (`docs/RESULTS.md`).
 3. ~~**Request tags**~~ and ~~**step done**~~: done (section 6 above).
-4. **Scheduler v1** (`internal/sched`): hold statements and release them in a hard-coded order.
-   Its spec is written first, as tests (`internal/sched/sched_test.go`), behind a `sched` build
-   tag so the normal test run stays green until the package exists:
-   `go test -race -tags sched ./internal/sched`.
-5. **Kill test** (Phase 1 exit, `victims/coupon/kill_test.go`, same build tag): one hard-coded
+4. **Scheduler v1** (`src/sched/`): hold statements and release them in a hard-coded order.
+   Its spec is written first, as tests (`src/sched/sched.spec.ts`). The `.spec.ts` name keeps them
+   out of `npm test` so the normal run stays green until the scheduler exists:
+   `npm run test:sched`.
+5. **Kill test** (Phase 1 exit, `victims/coupon/kill.spec.ts`, run the same way): one hard-coded
    order causes the double-redeem 10 out of 10 times, and the opposite order never does.

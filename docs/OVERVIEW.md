@@ -5,7 +5,7 @@ This is the plain-language "why and what" of the project. For exact requirements
 
 ## What Interleave is and is not
 
-- **A testing tool, not part of the app.** Run from the terminal like `go test`. No website or dashboard.
+- **A testing tool, not part of the app.** Run from the terminal like a test runner. No website or dashboard.
 - **The crash-test lab, not the seatbelt.** It finds races in the app's own rules (Postgres is
   assumed correct) and proves whether a fix holds. It never fixes the app: `FOR UPDATE`, unique
   constraints, conditional updates and SERIALIZABLE + retry are the developer's job.

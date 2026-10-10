@@ -21,7 +21,7 @@ Consequences: <what this makes easy, what it makes hard, what to revisit later>
 ---
 
 ## D-001: Implement Interleave in Go
-Status: Accepted      Date: 2026-10-03
+Status: Superseded by D-020      Date: 2026-10-03
 Context: Need a network proxy handling many connections plus a central scheduler.
 Decision: Go.
 Alternatives: TypeScript/Node (Himanshu knows it best, but proxies and fine-grained concurrency
@@ -100,7 +100,7 @@ Alternatives: Live web dashboard (high frontend effort, low engineering signal).
 Consequences: Recruiters judge the engine, not the UI. Keep UI work to ~10% of time.
 
 ## D-009: Victim apps written in Go for the MVP
-Status: Accepted      Date: 2026-10-03
+Status: Superseded by D-020      Date: 2026-10-03
 Context: The benchmark suite needs small apps with known races.
 Decision: Go + pgx (simple protocol) for MVP victims; Node and Python victims in Phase 4.
 Alternatives: Node/Express first (Himanshu knows it, but adds a second toolchain to install now).
@@ -122,7 +122,7 @@ tests and tools must only touch `interleave` and DBs Interleave creates; the loc
 compose (17), so bump compose to 18 before the demo. Postgres 18 brings protocol 3.2 (see ARCHITECTURE.md section 8).
 
 ## D-011: Plain Go module path `interleave` (no GitHub path yet)
-Status: Accepted      Date: 2026-10-03
+Status: Superseded by D-020      Date: 2026-10-03
 Context: `go mod init` needs a module path; the usual form is github.com/<user>/<repo>.
 Decision: Use `interleave`. Imports look like `interleave/internal/proxy`.
 Alternatives: github.com/<username>/interleave (ties the project to a GitHub account before
@@ -142,6 +142,9 @@ Alternatives: `:6433` as in the SPEC (reachable from the LAN); also forcing `--l
 other interfaces).
 Consequences: Safe by default, and the "never a remote database" rule is enforced in code, not
 just in docs. SPEC section 3 updated to match.
+Restated for TS (D-020): defaults are `--listen 127.0.0.1:6433` and `--upstream 127.0.0.1:5432`,
+because Node may resolve `localhost` to `::1` while a server listens on 127.0.0.1 only.
+`PgProxy`'s constructor refuses any upstream outside localhost, 127.0.0.0/8 and ::1 (`net.BlockList`).
 
 ## D-013: pgwire reads from io.Reader without a context; cancel by closing the connection
 Status: Proposed      Date: 2026-10-04
@@ -154,6 +157,9 @@ Alternatives: a ctx parameter that is ignored (misleading); per-read deadlines f
 (more code, same effect).
 Consequences: `pgwire` stays pure and easy to unit-test with `bytes.Reader`; the proxy is the
 single place that decides when connections close.
+Restated for TS (D-020): `WireReader` reads from any `AsyncIterable<Buffer>` and takes no
+`AbortSignal`; the proxy cancels by destroying the socket, which ends the pending read. Tests feed
+it async generators, including one byte per chunk.
 
 ## D-014: Proxy batches writes: send messages that arrived together in one Write
 Status: Accepted      Date: 2026-10-04
@@ -172,6 +178,10 @@ Consequences: Measured in one alternating run (old vs new proxy, 4 x 10s): +20.5
 (~0.18 ms per round trip). Still -35.4% vs direct on this tiny-query workload; the rest is
 probably the extra hop itself (not profiled; pprof in Phase 3). Tag extraction must keep this
 rule when it starts parsing `Q` messages in the same loop.
+Restated for TS (D-020): `forward` collects the raw bytes of messages that arrived together in
+`held` and sends them with one `socket.write`; it writes as soon as the `WireReader` has no further
+complete message, and waits for `'drain'` when `write` returns false (backpressure). Proxy sockets
+set TCP_NODELAY, which Go does by default.
 
 ## D-015: Request tag only at the very start of the query; tag is 1-64 of A-Z a-z 0-9 _ -
 Status: Accepted      Date: 2026-10-04
@@ -198,6 +208,8 @@ Alternatives: inherit the tag inside a transaction (the proxy remembers a connec
 while ReadyForQuery says `T`/`E`; works for ORMs, but more proxy state and edge cases now).
 Consequences: Simplest rule; the kill test only needs tagged SELECT/UPDATE/INSERT/COMMIT. The
 explorer cannot choose when a ROLLBACK runs. Revisit (tag inheritance) for ORM apps in Phase 4.
+Note (D-021): the TypeScript victims send ROLLBACK themselves and now tag it. The rule above still
+holds for any statement an app cannot tag.
 
 ## D-017: Proxy↔sched interface: `OnQuery(ctx, tag, sql)` parks a query and returns its `done`
 Status: Accepted      Date: 2026-10-04 (completion added 2026-10-09)
@@ -219,6 +231,16 @@ connections. Every `Q` queues an entry, even a nil one, or pipelined replies wou
 wrong query. `done` runs on the connection's postgres→app goroutine, so it must not block
 for long (send to sched with a `select` on ctx). If a connection dies mid-step, `done` is never
 called; the run timeout covers that.
+Restated for TS (D-020): `onQuery(signal, tag, sql) => Promise<DoneFn | undefined> | DoneFn |
+undefined`. Parking = the Promise is pending; the client pump reads nothing more until it settles.
+`signal` aborts on connection teardown or shutdown. The per-connection FIFO is a plain array (one
+thread, no lock; the Go capacity of 16 is gone): every `Q` pushes its `done` or an `undefined`
+placeholder before it is forwarded, and each `Z`, once written to the app, shifts one. Sync (`S`)
+and FunctionCall (`F`) messages also get one `Z` each, so they take a placeholder slot too (else a
+pipelined Sync's reply would be credited to the next Query). If either socket closes by itself
+(e.g. the app resets its connection) the connection's signal aborts, so a parked query is released
+even though no pump is reading. If the hook throws while the connection is open, the error is
+logged and the query is forwarded unscheduled.
 
 ## D-018: Project renamed from RaceHound to Interleave
 Status: Accepted      Date: 2026-10-08
@@ -250,3 +272,42 @@ steps addressed by SQL text (breaks when two statements are equal); no build tag
 Consequences: v1 has no quiet period, lock-wait timeout or explorer: an order that makes a step
 wait on a lock held by a parked step deadlocks until the run ctx times out (Phase 2 handles
 that). Remove the build tags once the tests pass.
+Restated for TS (D-020), still Proposed: `new Scheduler(order)`, `onQuery(signal, tag, sql):
+Promise<DoneFn | undefined>`, `run(signal): Promise<Step[]>` that rejects with
+`RunAbortedError { trace, cause }` when aborted; `Step = { tag, sql, status }`. Wire it with
+`p.onQuery = (sig, tag, sql) => s.onQuery(sig, tag, sql)` (passing `s.onQuery` alone loses `this`).
+A step whose own signal aborts must settle (resolve or reject). The spec is
+`src/sched/sched.spec.ts` (7 tests) and the exit test `victims/coupon/kill.spec.ts`; the `.spec.ts`
+name keeps them out of `npm test` (instead of a build tag) and `npm run test:sched` runs them.
+Rename them to `.test.ts` once they pass. The serial kill order has 8 entries (B's ROLLBACK, D-021).
+
+## D-020: Migrate from Go to TypeScript (Node.js)
+Status: Accepted      Date: 2026-10-10
+Context: D-001's fallback: learning Go took longer than the time available, and every line of the
+codebase must be explainable in depth. Only the language changes: architecture, decisions,
+behaviour, tests and safety rules stay.
+Decision: TypeScript on Node 24, run directly by Node's type stripping (no build step; `tsc
+--noEmit` only type-checks, `erasableSyntaxOnly`). Dependencies: `pg` at runtime; `typescript`,
+`@types/node`, `@types/pg` for development. Node built-ins for the rest (`node:net`, `node:http`,
+`node:test`, `node:util` parseArgs). Go code kept at tag `go-final`.
+Alternatives: stay on Go (best fit for a proxy, but not defensible line by line in time); Rust
+(steeper still); TypeScript via tsx/ts-node or compiled output (an extra dependency or build step
+that Node 24 makes unnecessary).
+Consequences: goroutines and channels become async functions, Promises and AbortSignal; a parked
+query is an unresolved Promise. No data-race detector exists: concurrency is checked by 20x repeat
+runs, leak checks and "tests must exit by themselves" (docs/TESTING.md). Victims are TypeScript +
+`pg` (supersedes D-009); a non-TypeScript victim is needed later to show language independence.
+No Go module (supersedes D-011; `package.json` name `interleave`). Measured: the TS proxy adds ~60
+µs per round trip vs ~54 µs for the Go proxy on the same run (RESULTS.md). D-012, D-013, D-014,
+D-017 and D-019 carry "Restated for TS" notes.
+
+## D-021: Victims tag ROLLBACK too
+Status: Accepted      Date: 2026-10-10
+Context: pgx sent ROLLBACK itself and gave no way to tag it (D-016). With `pg`, the app sends
+BEGIN, COMMIT and ROLLBACK as ordinary queries, so it can tag all of them.
+Decision: Victims prefix ROLLBACK with the request tag like every other statement, so every
+statement they send is a schedulable step. D-016 still applies to statements an app cannot tag.
+Alternatives: leave ROLLBACK untagged as before (it would pass through unscheduled, and the
+explorer could not choose when it runs).
+Consequences: the coupon's 409 path is 3 steps for B (BEGIN, SELECT, ROLLBACK); the kill test's
+serial order is A x5 then B x3; `QueriesCarryRequestTag` expects no untagged statements.

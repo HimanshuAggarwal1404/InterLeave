@@ -26,27 +26,34 @@ The proxy runs inside the `interleave run` process, so the scheduler and proxy s
 
 ## 2. Package layout
 
+TypeScript, run directly by Node.js (type stripping; `tsc --noEmit` only type-checks). Tests sit
+next to the code as `*.test.ts`; specs written before their code are `*.spec.ts` (not in `npm test`).
+
 ```
-cmd/interleave/       CLI entry point: run, replay, proxy subcommands (flag parsing only)
-cmd/bench/            HTTP load generator for the pass-through overhead measurement (NFR-3)
-internal/pgwire/      Message framing: read/write typed messages, startup packets. No policy.
-internal/proxy/       Accepts client conns, dials upstream, forwards bytes, extracts request
-                      tags, hands tagged Query messages to the scheduler, reports completions.
-internal/sched/       Parks steps, tracks request states, decides at decision points,
-                      lock-wait timeout, quiet period. Owns the "what may run now" logic.
-internal/explore/     Strategies that produce choices: exhaustive DFS with replay,
-                      random (seeded). Later: PCT, partial-order reduction.
-internal/oracle/      Runs invariants; later the serial-equivalence check.
-internal/harness/     Fires HTTP requests concurrently with X-Interleave-Req tags, collects responses.
-internal/reset/       Executes reset SQL on the admin connection. Later: template-DB clones.
-internal/scenario/    Parses and validates scenario.yaml.
-internal/report/      Terminal timeline, schedule.json writer/reader, later HTML report.
-internal/runner/      Orchestrates one run and the loop of runs: reset → start requests →
-                      drive scheduler with explorer choices → judge → record.
-victims/<name>/       Deliberately racy test apps (Go), each with seed.sql, scenario.yaml, README.md.
+src/cli/          CLI entry point: run, replay, proxy subcommands (flag parsing only); main.ts starts it
+src/bench/        HTTP load generator for the pass-through overhead measurement (NFR-3)
+src/pgwire/       Message framing: WireReader turns socket chunks into typed messages and startup
+                  packets. No sockets of its own, no policy.
+src/proxy/        Accepts client conns, dials upstream, forwards bytes, extracts request
+                  tags, hands tagged Query messages to the scheduler, reports completions.
+src/sched/        Parks steps, tracks request states, decides at decision points,
+                  lock-wait timeout, quiet period. Owns the "what may run now" logic.
+src/explore/      Strategies that produce choices: exhaustive DFS with replay,
+                  random (seeded). Later: PCT, partial-order reduction.
+src/oracle/       Runs invariants; later the serial-equivalence check.
+src/harness/      Fires HTTP requests concurrently with X-Interleave-Req tags, collects responses.
+src/reset/        Executes reset SQL on the admin connection. Later: template-DB clones.
+src/scenario/     Parses and validates scenario.yaml.
+src/report/       Terminal timeline, schedule.json writer/reader, later HTML report.
+src/runner/       Orchestrates one run and the loop of runs: reset → start requests →
+                  drive scheduler with explorer choices → judge → record.
+src/testutil/     Helpers shared by tests (byte fixtures, cleanup that always runs).
+victims/<name>/   Deliberately racy test apps (TypeScript + pg), each with app.ts, main.ts,
+                  seed.sql, scenario.yaml, README.md.
+scripts/          Small Node scripts (repeat.ts runs the concurrent suites many times).
 ```
 
-Dependency direction: `cmd → runner → {proxy, sched, explore, oracle, harness, reset, scenario,
+Dependency direction: `cli → runner → {proxy, sched, explore, oracle, harness, reset, scenario,
 report}`; `proxy → pgwire`; `sched` and `explore` depend on nothing project-specific beyond
 shared types. Keep `sched` free of networking so it can be unit-tested with fake steps.
 
@@ -79,16 +86,27 @@ shared types. Keep `sched` free of networking so it can be unit-tested with fake
 8. When every request is `finished`, `oracle` runs the invariants on the admin connection.
 9. `runner` records the result. On violation, `report` prints the timeline and writes the schedule.
 
-## 5. Concurrency model in Go
+## 5. Concurrency model (Node.js event loop)
 
-- One goroutine per client connection reading from the client, one reading from upstream.
-- `sched` is a single goroutine that owns all scheduling state. Other goroutines talk to it only
-  through channels (events in: step parked, step completed, request finished; commands out:
-  release step X). This avoids shared-state locking in the most delicate code.
-- Each parked step waits on its own "release" channel.
-- Timers (quiet period, lock-wait timeout, run timeout) are owned by the scheduler goroutine.
-- Everything takes a `context.Context` so a run can be cancelled cleanly. No goroutine leaks:
-  tests should verify the goroutine count returns to baseline after a run.
+Node runs all JavaScript on one thread. Waiting (for a socket, a timer, a release) never blocks
+that thread: it is an `await` on a Promise, and other code runs in the meantime. So there are no
+data races on shared variables, but every `await` is a point where other connections' code can
+run: state read before an `await` may have changed after it.
+
+- Each client connection is one async function (`handle`) with two async loops (`forward`
+  pumps), one per direction. Whichever pump ends first closes both sockets.
+- A parked step is a Promise that the scheduler has not resolved yet. While the proxy awaits it,
+  that connection's client pump reads nothing more, so TCP backpressure holds the app.
+- `sched` keeps all scheduling state in one object and is the only code that changes it (events
+  in: step parked, step completed, request finished; decisions out: resolve step X's Promise).
+  One thread means no locks are needed, but every decision must hold across awaits.
+- Timers (quiet period, lock-wait timeout, run timeout) are owned by the scheduler and are always
+  cleared; a forgotten timer keeps the process alive.
+- Cancellation is an `AbortSignal` (one per proxy, one per connection, one per run). Everything that
+  can wait takes one. Shutdown destroys every socket (`server.close()` alone leaves open
+  connections running) and `serve()` settles only when every socket has closed. Tests verify that
+  no socket or timer is left behind and that every test process exits by itself.
+- Every socket and `pg.Pool` has an `'error'` listener: an unhandled `'error'` event stops the process.
 
 ## 6. Exhaustive exploration (DFS with replay)
 
@@ -119,8 +137,12 @@ when the coupon is exhausted), so schedules are not precomputed. Instead:
 
 ## 8. Known gotchas (add to this list as they are found)
 
-- `pgx` uses the extended protocol by default. Victim DSNs must set
-  `default_query_exec_mode=simple_protocol`, or statements bypass the scheduler.
+- `pg` (node-postgres) uses the extended protocol (Parse/Bind/Execute) for any query with a values
+  array (`$1`). Victims send plain text only, or statements bypass the scheduler; a test records
+  the frontend message types on the wire to prove it.
+- Node may resolve `localhost` to `::1` while a server listens on 127.0.0.1 only. Defaults and
+  DSNs use `127.0.0.1` explicitly.
+- Node sockets do not set TCP_NODELAY by default (Go does); the proxy sets it on both sides.
 - Clients often try TLS first. Without the `N` reply to `SSLRequest`, connections hang.
 - Connection pools open connections lazily and keep idle ones. Untagged health checks must pass
   through without scheduling or the run deadlocks.
@@ -145,5 +167,5 @@ when the coupon is exhausted), so schedules are not precomputed. Instead:
   (steps on disjoint tables/rows commute).
 - Delta-debugging shrinker for failing schedules.
 - Fast reset: template databases cloned per run, proxy rewrites the `database` startup parameter.
-- Extended protocol scheduling (step = Parse..Sync group), ORM and non-Go victims.
+- Extended protocol scheduling (step = Parse..Sync group), ORM and non-TypeScript victims.
 - Static HTML report, `interleave replay --step` polish, GitHub Action.

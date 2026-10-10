@@ -4,10 +4,11 @@ About 12 weeks at 10-15 hours/week (alongside an internship until early January 
 placement prep). Each phase has an exit test. Do not start a phase before the previous exit test passes.
 
 ## Phase 0: Setup (week 0)
-- Install Go, git and PostgreSQL 18 natively. Postgres runs as a Windows
+- Install Node.js 22.18+ (24 LTS used), git and PostgreSQL 18 natively. Postgres runs as a Windows
   service; put its `bin` on PATH so `psql` works. (Postgres + PATH done 2026-10-03.)
-- Learn Go basics: Tour of Go through goroutines and channels.
-- `go mod init`, repo skeleton, Makefile or task list of commands.
+- Learn the TypeScript and Node basics the code uses (async/await, Buffers, sockets, AbortSignal).
+- `package.json` with the npm scripts, repo skeleton.
+  (Started in Go on 2026-10-03; migrated to TypeScript on 2026-10-10, D-020.)
 - First victim app `victims/coupon` talking directly to Postgres (port 5432), plus seed.sql.
 - **Exit test:** firing 50 concurrent redeems at the coupon app directly sometimes over-redeems
   (proves the bug is real before Interleave exists).
@@ -42,9 +43,10 @@ placement prep). Each phase has an exit test. Do not start a phase before the pr
 
 ## Phase 4: Real-world apps (weeks 9-10)
 - Extended protocol: schedule a Parse/Bind/Execute/Sync group as one step.
-- Victims in Node (node-postgres) and Python (psycopg / SQLAlchemy) to prove language independence.
+- Victims in another language (e.g. Python with psycopg / SQLAlchemy) and one built on an ORM, to
+  prove language independence (the MVP victims are TypeScript + node-postgres).
 - Point Interleave at one open-source app with money/inventory logic, run locally.
-- **Exit test:** at least one non-Go victim and one ORM-based app work end to end.
+- **Exit test:** at least one non-TypeScript victim and one ORM-based app work end to end.
 
 ## Phase 5: Ship it (weeks 11-12)
 - Static HTML report (single file). Keep to ~10% of effort.

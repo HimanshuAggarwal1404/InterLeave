@@ -25,36 +25,48 @@ no lock, so B reads the row while A is still deciding.
 
 ## Fix
 
-Lock the row while checking: `SELECT uses, max_uses FROM coupons WHERE code = $1 FOR UPDATE`
+Lock the row while checking: `SELECT uses, max_uses FROM coupons WHERE code = '...' FOR UPDATE`
 inside the transaction. B's `SELECT ... FOR UPDATE` then waits until A commits and reads
 `uses = 1`, so B is rejected. An alternative is one conditional statement:
-`UPDATE coupons SET uses = uses + 1 WHERE code = $1 AND uses < max_uses` and checking that it
+`UPDATE coupons SET uses = uses + 1 WHERE code = '...' AND uses < max_uses` and checking that it
 updated one row, because a single `UPDATE` re-checks its `WHERE` on the latest row version.
+
+## Files
+
+- `app.ts`: the handler and `redeem` (the bug, and the fix behind `--fixed`).
+- `main.ts`: flags (`--addr`, default `127.0.0.1:8081`; `--dsn`; `--fixed`) and the HTTP server.
+- `seed.sql`: creates the tables if needed and resets them to one unused, single-use coupon.
+- `app.test.ts`: the Phase 0 exit test and the other app tests; `kill.spec.ts`: the Phase 1 exit test.
+
+Every statement is sent as plain text with no values array, so node-postgres uses the simple
+query protocol that Interleave schedules. The code is inlined with `escapeLiteral`, the user id
+only after checking it is an integer.
 
 ## Run it
 
 ```bash
-psql "postgresql://interleave:interleave@localhost:5432/interleave" -f victims/coupon/seed.sql
-go run ./victims/coupon --dsn "postgres://interleave:interleave@localhost:5432/interleave?sslmode=disable&default_query_exec_mode=simple_protocol"
-curl -X POST localhost:8081/redeem -d '{"code":"DIWALI50","user_id":1}'
+psql "postgresql://interleave:interleave@127.0.0.1:5432/interleave" -f victims/coupon/seed.sql
+node victims/coupon/main.ts --dsn "postgres://interleave:interleave@127.0.0.1:5432/interleave?sslmode=disable"
+curl -X POST http://127.0.0.1:8081/redeem -d '{"code":"DIWALI50","user_id":1}'
 ```
 
-Without `--dsn` the app connects through Interleave's proxy on port 6433.
+Without `--dsn` the app connects through Interleave's proxy on `127.0.0.1:6433`.
 Phase 0 exit test (blasts 50 concurrent redeems directly at Postgres):
-`go test ./victims/coupon -run TestRaceIsReal -v`
+`node --test --test-name-pattern=RaceIsReal victims/coupon/app.test.ts`
 
-Request tags: send `-H "X-Interleave-Req: A"` and every statement, including `BEGIN`/`COMMIT`, starts
-with `/* il:req=A */` (pgx's `rollback` cannot be tagged). Other header values get 400, because the
-tag is pasted into SQL. Without the header nothing is tagged.
-`TestQueriesCarryRequestTag` checks this through a real proxy.
+Request tags: send `-H "X-Interleave-Req: A"` and every statement the app sends, `BEGIN`, `COMMIT`
+and `ROLLBACK` included, starts with `/* il:req=A */` (D-021). Other header values get 400, because
+the tag is pasted into SQL. Without the header nothing is tagged.
+`QueriesCarryRequestTag` checks this through a real proxy.
 
-Fixed variant: `go run ./victims/coupon --fixed` uses `SELECT ... FOR UPDATE`.
-`TestFixedNeverOverRedeems` blasts it like `TestRaceIsReal` (20 rounds of 50 requests): never more
+Fixed variant: `node victims/coupon/main.ts --fixed` uses `SELECT ... FOR UPDATE`.
+`FixedNeverOverRedeems` blasts it like `RaceIsReal` (20 rounds of 50 requests): never more
 than one redemption.
 
-Kill test (Phase 1 exit, `kill_test.go`): requests A and B go through a real proxy whose scheduler
+Kill test (Phase 1 exit, `kill.spec.ts`): requests A and B go through a real proxy whose scheduler
 releases their statements in a fixed order. The bad order (A BEGIN, A SELECT, B BEGIN, B SELECT,
 then A's UPDATE/INSERT/COMMIT, then B's) must double-redeem 10/10 times; the serial order (all of A,
-then B) never may. It needs `internal/sched`, so it builds only with `-tags sched` until then.
+then B's BEGIN, SELECT and ROLLBACK) never may. It needs `src/sched`, so it runs only with
+`npm run test:sched` until then.
 
 Still to come: `scenario.yaml` (Phase 2).
