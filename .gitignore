@@ -6,10 +6,10 @@
 # Interleave run artifacts (schedules, reports)
 /.interleave/
 
-# Go
-*.test
-*.out
-coverage.*
+# Node
+node_modules/
+*.tsbuildinfo
+*.log
 
 # OS / editor
 .DS_Store

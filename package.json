@@ -1,0 +1,27 @@
+{
+  "name": "interleave",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Finds race conditions in Postgres-backed web apps by controlling the order of their SQL statements.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test \"src/**/*.test.ts\" \"victims/**/*.test.ts\"",
+    "test:sched": "node --test \"src/sched/*.spec.ts\" \"victims/coupon/kill.spec.ts\"",
+    "test:repeat": "node scripts/repeat.ts 20",
+    "typecheck": "tsc --noEmit",
+    "proxy": "node src/cli/main.ts proxy",
+    "coupon": "node victims/coupon/main.ts",
+    "bench": "node src/bench/main.ts"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
+    "typescript": "~7.0.2"
+  }
+}

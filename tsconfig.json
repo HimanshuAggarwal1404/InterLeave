@@ -1,0 +1,22 @@
+{
+  // Type-checking only: Node runs the .ts files itself by stripping the types,
+  // so tsc never writes JavaScript (noEmit).
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2023"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    // Imports name the real file, e.g. "./reader.ts", because Node loads that file directly.
+    "allowImportingTsExtensions": true,
+    // Type-only imports must say "import type": Node strips them; tsc checks we did.
+    "verbatimModuleSyntax": true,
+    // Only TypeScript that Node can strip: no enum, namespace or constructor parameter properties.
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "victims/**/*.ts", "scripts/**/*.ts"]
+}
