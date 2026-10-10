@@ -39,16 +39,22 @@ export async function readCoupon(pool: pg.Pool): Promise<{ uses: number; maxUses
   return { uses: rows[0].uses, maxUses: rows[0].max_uses, redemptions: rows[0].redemptions };
 }
 
-// startServer runs handler on a random local port until the test ends and
-// returns its base URL.
-export async function startServer(t: TestContext, handler: http.RequestListener): Promise<string> {
+// openServer runs handler on a random local port and returns its base URL
+// and a close function. startServer does the same until the test ends.
+export async function openServer(handler: http.RequestListener): Promise<{ url: string; close: () => Promise<void> }> {
   const server = http.createServer(handler);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
-  t.after(async () => {
+  const close = async () => {
     server.closeAllConnections(); // close() alone would wait for idle keep-alive connections
     await new Promise((r) => server.close(r));
-  });
-  return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
+  };
+  return { url: `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`, close };
+}
+
+export async function startServer(t: TestContext, handler: http.RequestListener): Promise<string> {
+  const { url, close } = await openServer(handler);
+  t.after(close);
+  return url;
 }
 
 // post sends one redeem request and returns the HTTP status and body. tag
@@ -79,10 +85,11 @@ export function post(
   });
 }
 
-// poolViaProxy starts an in-process Interleave proxy in front of the local
-// Postgres, with hook as its onQuery, and returns a pool through it. At test
-// end the pool is closed first, then the proxy is shut down.
-export async function poolViaProxy(t: TestContext, hook: OnQuery): Promise<pg.Pool> {
+// openPoolViaProxy starts an in-process Interleave proxy in front of the
+// local Postgres, with hook as its onQuery, and returns a pool through it and
+// a close function (pool first, then the proxy). poolViaProxy does the same
+// until the test ends.
+export async function openPoolViaProxy(hook: OnQuery): Promise<{ pool: pg.Pool; close: () => Promise<void> }> {
   const p = new PgProxy('127.0.0.1:5432');
   p.onQuery = hook;
   const server = net.createServer();
@@ -91,10 +98,16 @@ export async function poolViaProxy(t: TestContext, hook: OnQuery): Promise<pg.Po
   const served = p.serve(server, ctl.signal);
   const port = (server.address() as net.AddressInfo).port;
   const pool = newPool(DIRECT_DSN.replace('127.0.0.1:5432', `127.0.0.1:${port}`));
-  t.after(async () => {
+  const close = async () => {
     await pool.end();
     ctl.abort();
     await served;
-  });
+  };
+  return { pool, close };
+}
+
+export async function poolViaProxy(t: TestContext, hook: OnQuery): Promise<pg.Pool> {
+  const { pool, close } = await openPoolViaProxy(hook);
+  t.after(close);
   return pool;
 }
