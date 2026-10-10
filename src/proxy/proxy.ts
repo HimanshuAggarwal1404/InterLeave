@@ -124,6 +124,10 @@ export class PgProxy {
     // listener, an 'error' event (e.g. a connection reset) would crash the
     // whole process.
     client.on('error', ignore);
+    // Send small writes at once. Go does this for every TCP connection by
+    // default; Node does not, and Nagle's algorithm would otherwise hold a
+    // small message back while an earlier one is unacknowledged.
+    client.setNoDelay(true);
     let upstream: net.Socket | undefined;
 
     // conn is aborted when this connection ends for any reason. It un-parks a
@@ -158,7 +162,7 @@ export class PgProxy {
         return;
       }
 
-      upstream = net.connect({ host: this.#host, port: this.#port });
+      upstream = net.connect({ host: this.#host, port: this.#port, noDelay: true });
       upstream.on('error', ignore);
       try {
         await once(upstream, 'connect', { signal: conn.signal });
