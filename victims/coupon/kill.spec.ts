@@ -48,19 +48,23 @@ test('KillTest', async (t) => {
 // request's HTTP status and the coupon's final use count.
 async function redeemInOrder(pool: pg.Pool, order: string[]): Promise<{ statuses: { A: number; B: number }; uses: number }> {
   await resetDB(pool);
+  // Created before anything is opened: if it throws, there is nothing to clean up.
+  const s = new Scheduler(order);
+
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(new Error('run timed out after 10s')), 10000);
-
-  const s = new Scheduler(order);
-  const run = s.run(ctl.signal);
-  run.catch(() => {}); // awaited below; this only stops an early rejection counting as unhandled
-
-  const viaProxy = await openPoolViaProxy((signal, tag, sql) => s.onQuery(signal, tag, sql));
-  const server = await openServer(newHandler(viaProxy.pool, false));
+  let viaProxy: Awaited<ReturnType<typeof openPoolViaProxy>> | undefined;
+  let server: Awaited<ReturnType<typeof openServer>> | undefined;
   try {
+    const run = s.run(ctl.signal);
+    run.catch(() => {}); // awaited below; this only stops an early rejection counting as unhandled
+
+    viaProxy = await openPoolViaProxy((signal, tag, sql) => s.onQuery(signal, tag, sql));
+    server = await openServer(newHandler(viaProxy.pool, false));
+    const url = server.url;
     const [a, b] = await withTimeout(
       Promise.all(
-        (['A', 'B'] as const).map((tag, i) => post(server.url, { tag, body: JSON.stringify({ code: 'DIWALI50', user_id: i + 1 }) })),
+        (['A', 'B'] as const).map((tag, i) => post(url, { tag, body: JSON.stringify({ code: 'DIWALI50', user_id: i + 1 }) })),
       ),
       `order ${order}: requests did not finish`,
       15000,
@@ -82,7 +86,7 @@ async function redeemInOrder(pool: pg.Pool, order: string[]): Promise<{ statuses
   } finally {
     clearTimeout(timer);
     ctl.abort();
-    await server.close();
-    await viaProxy.close();
+    await server?.close();
+    await viaProxy?.close();
   }
 }

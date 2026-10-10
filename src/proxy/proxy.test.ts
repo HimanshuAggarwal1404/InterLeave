@@ -270,6 +270,38 @@ test('AppResetWhileReplyPendingReleasesParkedQuery', async (t) => {
   await waitUntil(() => aborted, "Q2's signal did not abort after the app reset its connection");
 });
 
+// A hook that throws (or rejects) while the connection is open is a bug in
+// the hook, not in the query: the error is logged and the query is forwarded
+// unscheduled, with a placeholder slot so later replies still pair correctly.
+test('OnQueryFailureForwardsUnscheduled', async (t) => {
+  const finishes: Array<{ sql: string; status: ReadyStatus }> = [];
+  const upstream = await fakeUpstream(t);
+  const p = new PgProxy(upstream.addr);
+  p.onQuery = (_signal, _tag, sql) => {
+    if (sql.endsWith('throws')) {
+      throw new Error('hook bug');
+    }
+    if (sql.endsWith('rejects')) {
+      return Promise.reject(new Error('hook bug'));
+    }
+    return (status) => finishes.push({ sql, status });
+  };
+  const { client, server } = await connectedClient(t, p, upstream);
+
+  const steps: Array<[sql: string, reply: Buffer]> = [
+    ['/* il:req=A */ SELECT 1 -- throws', bytes(commandComplete, readyInTx)],
+    ['/* il:req=A */ SELECT 1 -- rejects', bytes(commandComplete, readyInTx)],
+    ['/* il:req=A */ SELECT 2', bytes(commandComplete, readyIdle)],
+  ];
+  for (const [sql, reply] of steps) {
+    client.write(queryMsg(sql));
+    await server.expectBytes(queryMsg(sql)); // forwarded despite the failing hook
+    server.write(reply);
+    await client.expectBytes(reply);
+  }
+  assert.deepEqual(finishes, [{ sql: '/* il:req=A */ SELECT 2', status: 'I' }], 'only the last query has a done, with its own status');
+});
+
 // Every Sync ('S', extended protocol) and FunctionCall ('F') also gets exactly
 // one ReadyForQuery. If an app pipelines a Sync ahead of a Query, the Sync's
 // ReadyForQuery must not be credited to the Query.

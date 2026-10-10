@@ -55,6 +55,9 @@ async function handle(pool: pg.Pool, fixed: boolean, req: http.IncomingMessage, 
   }
   // Interleave names each request it fires (A, B, ...). The tag goes into
   // SQL, so anything but a plain tag is refused (no SQL injection).
+  // Node joins repeated headers into one value ("A, B"), which then fails
+  // validTag, so a request with two tags is refused. (The array case is only
+  // there because Node's types allow it.)
   const header = req.headers['x-interleave-req'];
   const tag = Array.isArray(header) ? header[0] : (header ?? '');
   if (tag !== '' && !validTag(tag)) {
