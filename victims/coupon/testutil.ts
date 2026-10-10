@@ -6,6 +6,7 @@ import type { TestContext } from 'node:test';
 import type pg from 'pg';
 import { DIRECT_DSN, newPool } from './app.ts';
 import { PgProxy, type OnQuery } from '../../src/proxy/index.ts';
+import { onCleanup } from '../../src/testutil/cleanup.ts';
 
 // testPool connects to the interleave database directly (port 5432, bypassing
 // the proxy). Set INTERLEAVE_TEST_DSN to use a different database. It returns
@@ -20,7 +21,7 @@ export async function testPool(t: TestContext): Promise<pg.Pool | undefined> {
     t.skip(`Postgres not reachable: ${err instanceof Error ? err.message : String(err)}`);
     return undefined;
   }
-  t.after(() => pool.end());
+  onCleanup(t, () => pool.end());
   return pool;
 }
 
@@ -53,7 +54,7 @@ export async function openServer(handler: http.RequestListener): Promise<{ url: 
 
 export async function startServer(t: TestContext, handler: http.RequestListener): Promise<string> {
   const { url, close } = await openServer(handler);
-  t.after(close);
+  onCleanup(t, close);
   return url;
 }
 
@@ -108,6 +109,6 @@ export async function openPoolViaProxy(hook: OnQuery): Promise<{ pool: pg.Pool; 
 
 export async function poolViaProxy(t: TestContext, hook: OnQuery): Promise<pg.Pool> {
   const { pool, close } = await openPoolViaProxy(hook);
-  t.after(close);
+  onCleanup(t, close);
   return pool;
 }

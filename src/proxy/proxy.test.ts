@@ -24,6 +24,7 @@ import {
   startProxy,
   startupMsg,
   terminate,
+  waitUntil,
   withTimeout,
 } from './testutil.ts';
 import { bytes } from '../testutil/bytes.ts';
@@ -139,15 +140,20 @@ test('OnQueryAsyncHookParks', async (t) => {
   const p = new PgProxy(upstream.addr);
   let release: (() => void) | undefined;
   let called = false;
-  p.onQuery = () => {
+  p.onQuery = (signal) => {
     called = true;
-    return new Promise<undefined>((resolve) => (release = () => resolve(undefined)));
+    // Released by the test, or by the abort (the hook contract: a parked
+    // onQuery must settle when its signal aborts).
+    return new Promise<undefined>((resolve) => {
+      release = () => resolve(undefined);
+      signal.addEventListener('abort', () => resolve(undefined), { once: true });
+    });
   };
   const { client, server } = await connectedClient(t, p, upstream);
 
   const q = queryMsg('/* il:req=A */ SELECT 1');
   client.write(q);
-  await withTimeout(waitUntil(() => called), 'onQuery was never called');
+  await waitUntil(() => called, 'onQuery was never called');
   await new Promise((r) => setTimeout(r, 100));
   assert.equal(server.socket.bytesRead, startupMsg.length, 'the query reached Postgres while it was parked');
 
@@ -219,7 +225,7 @@ test('ShutdownReleasesParkedQuery', async (t) => {
   const pgSide = await upstream.accepted();
   await expectStartup(pgSide, startupMsg);
   client.write(queryMsg('/* il:req=A */ SELECT 1'));
-  await withTimeout(waitUntil(() => parked), 'onQuery was never called');
+  await waitUntil(() => parked, 'onQuery was never called');
 
   ctl.abort();
   await withTimeout(served, 'serve did not settle within 5s of abort while a query was parked');
@@ -389,9 +395,4 @@ async function assertNoLeaks(
   assert.equal(openHandles(), before, `open handles after shutdown: ${process.getActiveResourcesInfo().join(', ')}`);
 }
 
-async function waitUntil(cond: () => boolean): Promise<void> {
-  while (!cond()) {
-    await new Promise((r) => setImmediate(r));
-  }
-}
 

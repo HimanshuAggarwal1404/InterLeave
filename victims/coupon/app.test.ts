@@ -5,6 +5,7 @@ import { DIRECT_DSN, PROXY_DSN, newHandler, newPool } from './app.ts';
 import { poolViaProxy, post, readCoupon, resetDB, startServer, testPool } from './testutil.ts';
 import { WireReader } from '../../src/pgwire/index.ts';
 import { forward } from '../../src/proxy/index.ts';
+import { onCleanup } from '../../src/testutil/cleanup.ts';
 
 // fireConcurrently sends n redeem requests (user IDs 1..n) at the same moment.
 // No starting gate is needed: the loop starts all n requests before any of
@@ -155,7 +156,7 @@ test('StatementsUseSimpleProtocol', async (t) => {
     })().catch(close);
   });
   await new Promise<void>((r) => relay.listen(0, '127.0.0.1', () => r()));
-  t.after(async () => {
+  onCleanup(t, async () => {
     for (const s of open) s.destroy();
     await new Promise((r) => relay.close(r));
   });

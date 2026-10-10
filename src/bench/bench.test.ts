@@ -2,6 +2,7 @@ import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import type net from 'node:net';
+import { onCleanup } from '../testutil/cleanup.ts';
 import { formatDuration, median, newAgent, parseDuration, percentile, roundOrder, runRound, type Config } from './bench.ts';
 
 // fakeApp answers every request with status and counts the requests it served.
@@ -12,7 +13,7 @@ async function fakeApp(t: TestContext, status: number): Promise<{ url: string; s
     res.writeHead(status).end(status >= 500 ? 'internal error\n' : 'coupon already used up\n');
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
-  t.after(async () => {
+  onCleanup(t, async () => {
     server.closeAllConnections();
     await new Promise((r) => server.close(r));
   });
@@ -28,7 +29,7 @@ function config(url: string, workers: number): Config {
 test('RunRoundCountsEveryResponse', async (t) => {
   const app = await fakeApp(t, 409);
   const agent = newAgent(4);
-  t.after(() => agent.destroy());
+  onCleanup(t, () => agent.destroy());
   const res = await runRound(agent, config(app.url, 4), 100);
 
   assert.ok(res.requests > 0, 'round sent no requests');
@@ -42,7 +43,7 @@ test('RunRoundCountsEveryResponse', async (t) => {
 test('RunRoundCounts5xxAsErrors', async (t) => {
   const app = await fakeApp(t, 500);
   const agent = newAgent(2);
-  t.after(() => agent.destroy());
+  onCleanup(t, () => agent.destroy());
   const res = await runRound(agent, config(app.url, 2), 50);
   assert.ok(res.errors > 0 && res.errors === res.requests, `errors = ${res.errors}, requests = ${res.requests}; want every request to be an error`);
 });

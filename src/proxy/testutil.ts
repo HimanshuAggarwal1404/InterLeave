@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { PgProxy } from './proxy.ts';
 import { bytes, hex } from '../testutil/bytes.ts';
+import { onCleanup } from '../testutil/cleanup.ts';
 
 const TIMEOUT_MS = 5000;
 
@@ -44,6 +45,19 @@ export async function withTimeout<T>(p: Promise<T>, message: string, ms = TIMEOU
     return await Promise.race([p, timeout]);
   } finally {
     clearTimeout(timer); // never leave a timer behind: it would keep the test process alive
+  }
+}
+
+// waitUntil polls cond once per event-loop turn until it is true, and fails
+// after ms. It stops polling when it fails: a poll loop that outlived its
+// test would keep the process alive and hang the whole run.
+export async function waitUntil(cond: () => boolean, what: string, ms = TIMEOUT_MS): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > deadline) {
+      throw new Error(`timed out waiting: ${what}`);
+    }
+    await new Promise((r) => setImmediate(r));
   }
 }
 
@@ -135,7 +149,7 @@ export async function dial(t: TestContext, addr: string): Promise<TestConn> {
   const socket = net.connect({ host, port: Number(port) });
   const c = new TestConn(socket);
   await withTimeout(new Promise((r) => socket.once('connect', r)), `dial ${addr}`);
-  t.after(() => c.close());
+  onCleanup(t, () => c.close());
   return c;
 }
 
@@ -160,7 +174,7 @@ export async function fakeUpstream(
       await new Promise((r) => server.close(r));
     }
   };
-  t.after(close);
+  onCleanup(t, close);
   return { addr, accepted: () => withTimeout(first, 'proxy never connected upstream'), close };
 }
 
@@ -172,7 +186,7 @@ export async function serveProxy(t: TestContext, p: PgProxy): Promise<string> {
   const addr = await listen(server);
   const ctl = new AbortController();
   const served = p.serve(server, ctl.signal);
-  t.after(async () => {
+  onCleanup(t, async () => {
     ctl.abort();
     await withTimeout(served, 'serve did not settle within 5s of abort');
   });

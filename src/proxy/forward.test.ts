@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { PassThrough, Writable } from 'node:stream';
 import { WireReader, type Message } from '../pgwire/index.ts';
 import { forward } from './forward.ts';
-import { commandComplete, query, readyIdle, readyInTx, withTimeout } from './testutil.ts';
+import { commandComplete, query, readyIdle, readyInTx, waitUntil, withTimeout } from './testutil.ts';
 import { bytes, chunksOf, hex } from '../testutil/bytes.ts';
 
 // WriteRecorder is a real Writable that remembers every write separately, so a
@@ -136,22 +136,16 @@ test('ForwardWaitsForDrain', async () => {
   const done = forward(new WireReader(src), slow);
 
   src.write(readyIdle);
-  await withTimeout(waitUntil(() => release !== undefined), 'first message was never written');
+  await waitUntil(() => release !== undefined, 'first message was never written');
   src.write(commandComplete);
   // Give forward plenty of chances to (wrongly) write the second message.
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(slow.writableLength, readyIdle.length, 'forward wrote more while the destination was full');
 
   finishWrite(); // the first write completes: 'drain' fires, forward goes on
-  await withTimeout(waitUntil(() => release !== undefined), 'second message was never written after drain');
+  await waitUntil(() => release !== undefined, 'second message was never written after drain');
   finishWrite(); // complete the second write too
   src.end();
   await withTimeout(done, 'forward did not finish');
   assert.equal(hex(Buffer.concat(written)), hex(bytes(readyIdle, commandComplete)), 'bytes lost or reordered');
 });
-
-async function waitUntil(cond: () => boolean): Promise<void> {
-  while (!cond()) {
-    await new Promise((r) => setImmediate(r));
-  }
-}
