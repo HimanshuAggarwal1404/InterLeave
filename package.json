@@ -8,8 +8,8 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "test": "node --test \"src/**/*.test.ts\" \"victims/**/*.test.ts\"",
-    "test:sched": "node --test \"src/sched/*.spec.ts\" \"victims/coupon/kill.spec.ts\"",
+    "test": "node --test --test-timeout=60000 \"src/**/*.test.ts\" \"victims/**/*.test.ts\"",
+    "test:sched": "node --test --test-timeout=60000 \"src/sched/*.spec.ts\" \"victims/coupon/kill.spec.ts\"",
     "test:repeat": "node scripts/repeat.ts 20",
     "typecheck": "tsc --noEmit",
     "proxy": "node src/cli/main.ts proxy",

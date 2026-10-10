@@ -16,7 +16,7 @@ const started = performance.now();
 for (let i = 1; i <= times; i++) {
   // process.execPath is the node binary running this script; no shell is
   // involved, so the globs reach node --test unexpanded on every platform.
-  const r = spawnSync(process.execPath, ['--test', '--test-reporter=dot', ...globs], { stdio: ['ignore', 'pipe', 'inherit'], encoding: 'utf8' });
+  const r = spawnSync(process.execPath, ['--test', '--test-timeout=60000', '--test-reporter=dot', ...globs], { stdio: ['ignore', 'pipe', 'inherit'], encoding: 'utf8' });
   if (r.status !== 0) {
     process.stdout.write(r.stdout);
     console.error(`run ${i}/${times}: FAILED (exit ${r.status})`);
