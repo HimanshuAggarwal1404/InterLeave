@@ -4,9 +4,10 @@
 Interleave finds race conditions in web apps that use Postgres. It is a command-line testing tool
 (like a test runner), not a website. It is written in TypeScript and runs on Node.js.
 
-> **Status:** Phase 0 done. Phase 1 in progress: `pgwire`, the proxy, request tags and the
-> scheduler hook are done; the scheduler's spec and the Phase 1 kill test are written and wait for
-> the scheduler itself. This README explains, in plain words, everything that exists so far and how
+> **Status:** Phase 0 and Phase 1 done: `pgwire`, the proxy, request tags, the scheduler hook,
+> and a first scheduler that holds statements and releases them in a hard-coded order. The Phase 1
+> exit test passes: one order breaks the coupon 10 times out of 10, the opposite order never does.
+> Next is Phase 2, the engine that tries orders by itself. This README explains, in plain words, everything that exists so far and how
 > to try each piece yourself. The full plan is in `docs/ROADMAP.md`; the detailed "why" is in
 > `docs/OVERVIEW.md`; every test command is in `docs/TESTING.md`.
 
@@ -50,16 +51,16 @@ replay that order on demand. Instead of hoping to get unlucky, it tries every or
 | 8 | Request tags | Each statement says which HTTP request it belongs to; the proxy reads it | `src/proxy/tag.ts`, `victims/coupon/` |
 | 8b | Step done | The proxy tells its hook when each statement has finished, and how (`ReadyForQuery` status) | `src/proxy/proxy.ts`, `src/pgwire/ready.ts` |
 | 8c | `--fixed` coupon | The correct version of the app (`SELECT ... FOR UPDATE`), proven by blasting | `victims/coupon/` |
-| 8d | Scheduler spec + kill test | Tests written before the scheduler: what it must do, and the Phase 1 exit test | `src/sched/sched.spec.ts`, `victims/coupon/kill.spec.ts` |
+| 8d | Scheduler v1 + kill test | Holds tagged statements and releases them in a given order; the Phase 1 exit test | `src/sched/`, `victims/coupon/kill.test.ts` |
 | 9 | Project docs | Spec, architecture, roadmap, decisions, overview, results, testing | `docs/` |
 
 The project was first written in Go and moved to TypeScript (decision D-020): same design, same
 behaviour, same tests. The Go version is kept in git under the tag `go-final`.
 
-The order-trying engine (scheduler, explorer, invariant checker) does not exist yet. So far we
-have the **test subject** (the buggy app), **proof the bug is real**, and the **proxy** that
-the engine will be built into. The proxy already knows which request each statement belongs to
-and when each one finishes, but nothing holds statements back yet: that is the scheduler's job.
+What exists: the **test subject** (the buggy app), **proof the bug is real**, the **proxy**, and a
+first **scheduler** that holds each tagged statement and releases them in an order you give it.
+What does not exist yet is the part that *chooses* orders by itself (the explorer), checks rules
+after each run (the oracle) and reports (Phase 2).
 
 ### 2. The coupon victim app (`victims/coupon/`)
 
@@ -288,6 +289,36 @@ the wire. For "step done": `ReadyStatus` (7 cases), `ForwardReportsReadyAfterSen
 `DoneGetsEachQuerysReadyStatus` (including two statements sent before either reply) and
 `ShutdownReleasesParkedQuery`.
 
+
+### 7. The scheduler and the kill test (`src/sched/`, `victims/coupon/kill.test.ts`)
+
+The scheduler is the "traffic policeman". You give it an order of request names, for example
+`A, A, B, B, A, A, A, B, B, B`, meaning "A's 1st statement, A's 2nd, then B's 1st, B's 2nd, then A's
+3rd, ...". It plugs into the proxy's `onQuery` hook:
+
+- When a tagged statement arrives, the hook returns a Promise that stays **pending**: the
+  statement is held, and the proxy forwards nothing more from that connection.
+- When it is that statement's turn **and** the previous statement has finished (its
+  `ReadyForQuery` came back), the scheduler resolves the Promise: the statement goes to Postgres.
+- Exactly one statement runs at a time. Statements without a tag, from requests the order does
+  not name, or beyond a request's turns in the order, are not held at all.
+- `run()` resolves with a trace of what ran, with each statement's status. If the run is aborted
+  (a timeout, Ctrl+C), every held statement is let go so nothing hangs.
+
+All its state lives in one object, and one private method makes every release decision; it is
+called whenever a statement arrives, one finishes, or the run starts. Its rules are pinned down by
+`src/sched/sched.test.ts` (8 tests), written before the code.
+
+**The kill test** (Phase 1 exit) wires everything real together: the coupon app, the proxy,
+Postgres and the scheduler. Requests A and B are fired at the same moment; only the order differs:
+
+| Order | What must happen | Result |
+|---|---|---|
+| `A A B B A A A B B B` (both SELECTs before either UPDATE) | both redeem: `uses = 2`, both 200 | 10 / 10 runs |
+| `A A A A A B B B` (all of A, then B) | A redeems, B gets 409, `uses = 1` | 10 / 10 runs |
+
+The same bug that blasting found only by luck now happens **every time**, on demand.
+
 ---
 
 ## Try it yourself
@@ -309,7 +340,8 @@ psql --version        # psql (PostgreSQL) 18.6
 npx tsc --noEmit      # type-check: prints nothing when everything is fine
 npm test
 ```
-Expected: about 130 tests, `ℹ fail 0`, in a few seconds. The tests that need Postgres skip
+Expected: about 140 tests, `ℹ fail 0` (two summaries: the victim tests run separately, one file
+at a time, because they share the database), in a few seconds. The tests that need Postgres skip
 themselves if it is not running.
 
 Node has no race detector like Go's `-race`; instead the concurrent parts are run 20 times in a
@@ -445,6 +477,14 @@ curl -X POST http://127.0.0.1:8081/redeem -H "X-Interleave-Req: A */ DROP TABLE 
 # → invalid X-Interleave-Req header
 ```
 
+
+### Step 8: force the race on purpose
+```bash
+npm run test:sched
+```
+This runs the scheduler's tests and the kill test against your Postgres: `✔ KillTest` means the bad
+order double-redeemed in 10 of 10 runs and the serial order never did.
+
 ---
 
 ## Two different kinds of "race": do not mix them up
@@ -507,7 +547,7 @@ docs/                     SPEC, ARCHITECTURE, ROADMAP, DECISIONS, OVERVIEW, RESU
 src/cli/                  the interleave command (today: just `interleave proxy`)
 src/pgwire/               message framing + startup packets
 src/proxy/                pass-through proxy, request tags, step done
-src/sched/                scheduler spec as tests (sched.spec.ts) and its skeleton; the code comes next  ← newest
+src/sched/                the scheduler: holds statements, releases them in a given order  ← newest
 src/bench/                load generator for the proxy overhead measurement
 src/testutil/             small helpers shared by the tests
 victims/coupon/           the buggy coupon app (+ --fixed), seed data, README, exit + kill tests
@@ -517,15 +557,10 @@ docker-compose.yml        only for other people / the final demo; not used on th
 
 ---
 
-## What comes next (rest of Phase 1)
+## What comes next (Phase 2)
 
-1. ~~**Proxy, pass-through mode**~~: done (section 5 above).
-2. ~~**Overhead**: measure how much slower requests are through the proxy than direct~~: done
-   (`docs/RESULTS.md`).
-3. ~~**Request tags**~~ and ~~**step done**~~: done (section 6 above).
-4. **Scheduler v1** (`src/sched/`): hold statements and release them in a hard-coded order.
-   Its spec is written first, as tests (`src/sched/sched.spec.ts`). The `.spec.ts` name keeps them
-   out of `npm test` so the normal run stays green until the scheduler exists:
-   `npm run test:sched`.
-5. **Kill test** (Phase 1 exit, `victims/coupon/kill.spec.ts`, run the same way): one hard-coded
-   order causes the double-redeem 10 out of 10 times, and the opposite order never does.
+Phase 1 is done: proxy, overhead measured, request tags, step done, scheduler v1, and the kill
+test. Phase 2 (`docs/ROADMAP.md`) builds the engine around the scheduler: request states, a quiet
+period and lock-wait detection (so a statement stuck on a row lock does not stall everything),
+the explorer that tries every order by itself, the invariant checker, scenario files, a runner,
+a terminal report and replay, and seven more victim apps.

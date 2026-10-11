@@ -1,24 +1,21 @@
 // These tests are the spec for sched v1 (Phase 1): park tagged steps and
-// release them in a hard-coded order. They were written before the code, so
-// they are kept out of `npm test` (the file name ends in .spec.ts, not
-// .test.ts) until the scheduler passes them:
-//
-//   npm run test:sched
-//
-// Once they pass, rename this file to sched.test.ts so `npm test` runs it.
+// release them in a hard-coded order. They were written before the code and
+// define what it must do. Run them with the kill test: npm run test:sched
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { RunAbortedError, Scheduler, type DoneFn, type Step } from './sched.ts';
 
 const TIMEOUT_MS = 5000;
 
-// testSignal is the signal for one test: it aborts after 5 s (so a stuck
-// scheduler fails the test instead of hanging it) and when the test ends (so
-// the scheduler can clean up).
+// testSignal is the signal for one test: it aborts when the test ends (so the
+// scheduler can clean up) and, as a last resort, after twice receive's limit
+// (so a stuck scheduler cannot hang the run). It must outlast receive's 5 s:
+// otherwise a step that should have been released could instead be let go by
+// its own signal timing out, just in time to pass the check.
 function testSignal(t: TestContext): AbortSignal {
   const ctl = new AbortController();
   t.after(() => ctl.abort());
-  return AbortSignal.any([ctl.signal, AbortSignal.timeout(TIMEOUT_MS)]);
+  return AbortSignal.any([ctl.signal, AbortSignal.timeout(2 * TIMEOUT_MS)]);
 }
 
 // fakeRequest plays one request through the scheduler, the way the proxy
@@ -165,6 +162,21 @@ test('UnscheduledQueriesPassThrough', async (t) => {
     const done = await receive(s.onQuery(signal, tag, 'ROLLBACK'), `onQuery blocked for tag ${JSON.stringify(tag)}`);
     assert.equal(done, undefined, `tag ${JSON.stringify(tag)}: onQuery returned a done, want undefined (not scheduled)`);
   }
+});
+
+// A request that sends more tagged statements than the order lists for it
+// has no turns left: the extra ones pass through unscheduled at once instead
+// of waiting forever (D-019), even while the order is not finished.
+test('StepsBeyondTheOrderPassThrough', async (t) => {
+  const signal = testSignal(t);
+  const s = new Scheduler(['A', 'B']);
+  startRun(s, signal);
+
+  const doneA = await receive(s.onQuery(signal, 'A', 'a1'), "A's step was never released");
+  assert.ok(doneA);
+  doneA('T');
+  const extra = await receive(s.onQuery(signal, 'A', 'a2'), "A's extra step stayed parked although the order has no turn left for A");
+  assert.equal(extra, undefined, 'an extra step is not scheduled, so it has no done');
 });
 
 // Once the order is used up, run resolves and later steps run freely.

@@ -27,7 +27,8 @@ The proxy runs inside the `interleave run` process, so the scheduler and proxy s
 ## 2. Package layout
 
 TypeScript, run directly by Node.js (type stripping; `tsc --noEmit` only type-checks). Tests sit
-next to the code as `*.test.ts`; specs written before their code are `*.spec.ts` (not in `npm test`).
+next to the code as `*.test.ts`. A spec written before its code is named `*.spec.ts`, which keeps it
+out of `npm test` until the code passes it, then renamed to `*.test.ts`.
 
 ```
 src/cli/          CLI entry point: run, replay, proxy subcommands (flag parsing only); main.ts starts it

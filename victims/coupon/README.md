@@ -36,7 +36,7 @@ updated one row, because a single `UPDATE` re-checks its `WHERE` on the latest r
 - `app.ts`: the handler and `redeem` (the bug, and the fix behind `--fixed`).
 - `main.ts`: flags (`--addr`, default `127.0.0.1:8081`; `--dsn`; `--fixed`) and the HTTP server.
 - `seed.sql`: creates the tables if needed and resets them to one unused, single-use coupon.
-- `app.test.ts`: the Phase 0 exit test and the other app tests; `kill.spec.ts`: the Phase 1 exit test.
+- `app.test.ts`: the Phase 0 exit test and the other app tests; `kill.test.ts`: the Phase 1 exit test.
 
 Every statement is sent as plain text with no values array, so node-postgres uses the simple
 query protocol that Interleave schedules. The code is inlined with `escapeLiteral`, the user id
@@ -63,10 +63,10 @@ Fixed variant: `node victims/coupon/main.ts --fixed` uses `SELECT ... FOR UPDATE
 `FixedNeverOverRedeems` blasts it like `RaceIsReal` (20 rounds of 50 requests): never more
 than one redemption.
 
-Kill test (Phase 1 exit, `kill.spec.ts`): requests A and B go through a real proxy whose scheduler
+Kill test (Phase 1 exit, `kill.test.ts`): requests A and B go through a real proxy whose scheduler
 releases their statements in a fixed order. The bad order (A BEGIN, A SELECT, B BEGIN, B SELECT,
 then A's UPDATE/INSERT/COMMIT, then B's) must double-redeem 10/10 times; the serial order (all of A,
-then B's BEGIN, SELECT and ROLLBACK) never may. It needs `src/sched`, so it runs only with
-`npm run test:sched` until then.
+then B's BEGIN, SELECT and ROLLBACK) never may. Both hold: 10/10 each. Run it alone with
+`npm run test:sched`.
 
 Still to come: `scenario.yaml` (Phase 2).

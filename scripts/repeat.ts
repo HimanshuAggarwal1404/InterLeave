@@ -1,4 +1,4 @@
-// Runs the pgwire and proxy test suites N times in a row (default 20) and stops
+// Runs the pgwire, proxy and sched test suites N times in a row (default 20) and stops
 // at the first failure. Node has no race detector, so repeating the concurrent
 // tests many times is how we shake out timing-dependent bugs (see docs/TESTING.md).
 //
@@ -10,7 +10,7 @@ if (!Number.isInteger(times) || times < 1) {
   console.error('usage: node scripts/repeat.ts [N >= 1] [test globs...]');
   process.exit(2);
 }
-const globs = process.argv.length > 3 ? process.argv.slice(3) : ['src/pgwire/*.test.ts', 'src/proxy/*.test.ts'];
+const globs = process.argv.length > 3 ? process.argv.slice(3) : ['src/pgwire/*.test.ts', 'src/proxy/*.test.ts', 'src/sched/*.test.ts'];
 
 const started = performance.now();
 for (let i = 1; i <= times; i++) {

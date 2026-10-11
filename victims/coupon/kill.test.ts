@@ -1,9 +1,5 @@
-// The Phase 1 exit test. It needs the scheduler (src/sched), so it is kept
-// out of `npm test` (the name ends in .spec.ts) until the scheduler exists:
-//
-//   npm run test:sched
-//
-// Rename it to kill.test.ts once the scheduler passes its own spec.
+// The Phase 1 exit test: the real coupon app, proxy and Postgres, with the
+// scheduler deciding the order. Run it with the scheduler's spec: npm run test:sched
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type pg from 'pg';

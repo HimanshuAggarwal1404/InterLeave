@@ -254,7 +254,7 @@ Consequences: the Postgres role and database are renamed by hand; until then
 Earlier entries and the session log were rewritten to use the new name.
 
 ## D-019: sched v1 interface, specified by tests written before the code
-Status: Proposed      Date: 2026-10-09
+Status: Accepted      Date: 2026-10-09 (accepted 2026-10-11)
 Context: Phase 1 needs a first scheduler that parks tagged steps and releases them in a
 hard-coded order (the kill test). Its behaviour should be pinned down before it is written.
 Decision: `sched.New(order []string)`, where order lists request tags in release order (the
@@ -272,14 +272,22 @@ steps addressed by SQL text (breaks when two statements are equal); no build tag
 Consequences: v1 has no quiet period, lock-wait timeout or explorer: an order that makes a step
 wait on a lock held by a parked step deadlocks until the run ctx times out (Phase 2 handles
 that). Remove the build tags once the tests pass.
-Restated for TS (D-020), still Proposed: `new Scheduler(order)`, `onQuery(signal, tag, sql):
+Restated for TS (D-020): `new Scheduler(order)`, `onQuery(signal, tag, sql):
 Promise<DoneFn | undefined>`, `run(signal): Promise<Step[]>` that rejects with
 `RunAbortedError { trace, cause }` when aborted; `Step = { tag, sql, status }`. Wire it with
 `p.onQuery = (sig, tag, sql) => s.onQuery(sig, tag, sql)` (passing `s.onQuery` alone loses `this`).
 A step whose own signal aborts must settle (resolve or reject). The spec is
-`src/sched/sched.spec.ts` (7 tests) and the exit test `victims/coupon/kill.spec.ts`; the `.spec.ts`
-name keeps them out of `npm test` (instead of a build tag) and `npm run test:sched` runs them.
-Rename them to `.test.ts` once they pass. The serial kill order has 8 entries (B's ROLLBACK, D-021).
+`src/sched/sched.test.ts` and the exit test `victims/coupon/kill.test.ts` (named `.spec.ts`, outside
+`npm test`, until the scheduler passed them on 2026-10-11). The serial kill order has 8 entries
+(B's ROLLBACK, D-021).
+Accepted 2026-10-11, with one rule added: each tag has as many turns as the order lists it; a
+step that arrives when its request has no turn left passes through unscheduled at once, even
+while the order is not finished (a spec test covers it). Alternative: park it until the order
+ends (keeps one step at a time strictly, but can stall a run until its timeout). v1 keeps all
+state in one `Scheduler` object; one private method decides every release, called whenever a
+step arrives, a step finishes or the run starts. A parked step whose own signal aborts gives up
+its claimed turn unfilled, and a released step whose connection dies before its ReadyForQuery
+never calls done; in both cases the run waits until its timeout (Phase 2 handles this).
 
 ## D-020: Migrate from Go to TypeScript (Node.js)
 Status: Accepted      Date: 2026-10-10
