@@ -14,3 +14,4 @@ export {
 export { WireReader } from './reader.ts';
 export { queryString } from './query.ts';
 export { readyStatus, type ReadyStatus } from './ready.ts';
+export { commandTag, errorFields, firstColumn, type ErrorInfo } from './result.ts';

@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import pg from 'pg';
 import type { ReadyStatus } from '../pgwire/index.ts';
-import { PgProxy, type DoneFn } from './proxy.ts';
+import { PgProxy, type DoneFn, type StepResult } from './proxy.ts';
 import {
   TestConn,
   authOKReady,
@@ -302,6 +302,41 @@ test('OnQueryFailureForwardsUnscheduled', async (t) => {
   assert.deepEqual(finishes, [{ sql: '/* il:req=A */ SELECT 2', status: 'I' }], 'only the last query has a done, with its own status');
 });
 
+// done also receives what the statement did, read from the reply that comes
+// before its ReadyForQuery: the CommandComplete tag, the first column of the
+// first DataRow, and the code and message of an ErrorResponse. The scheduler
+// shows these in the report and spots deadlocks (40P01) by the code.
+test('DoneGetsStepResult', async (t) => {
+  const results: Array<StepResult | undefined> = [];
+  const upstream = await fakeUpstream(t);
+  const p = new PgProxy(upstream.addr);
+  p.onQuery = () => (_status, result) => results.push(result);
+  const { client, server } = await connectedClient(t, p, upstream);
+
+  // 'D' DataRow with one column "0", then CommandComplete "SELECT 1", then Z.
+  const dataRow = bytes('D', [0x00, 0x00, 0x00, 0x0b, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01], '0');
+  // 'E' ErrorResponse: severity, SQLSTATE 40P01, message, end of fields.
+  const deadlockBody = bytes('SERROR ', 'C40P01 ', 'Mdeadlock detected ', [0x00]);
+  const header = Buffer.alloc(5);
+  header.write('E', 0, 'latin1');
+  header.writeUInt32BE(4 + deadlockBody.length, 1);
+  const errorResponse = bytes(header, deadlockBody);
+
+  const steps: Array<[sql: string, reply: Buffer, want: StepResult]> = [
+    ['/* il:req=A */ SELECT uses FROM coupons', bytes(dataRow, commandComplete, readyInTx), { command: 'SELECT 1', firstValue: '0' }],
+    ['/* il:req=A */ UPDATE coupons SET uses = 1', bytes(commandComplete, readyInTx), { command: 'SELECT 1' }],
+    ['/* il:req=A */ UPDATE accounts SET n = 1', bytes(errorResponse, readyIdle), { error: { code: '40P01', message: 'deadlock detected' } }],
+  ];
+  for (const [sql, reply, want] of steps) {
+    client.write(queryMsg(sql));
+    await server.expectBytes(queryMsg(sql));
+    server.write(reply);
+    await client.expectBytes(reply);
+    // Each statement starts with an empty result: nothing carries over from the previous one.
+    assert.deepEqual(results.shift(), want, sql);
+  }
+});
+
 // Every Sync ('S', extended protocol) and FunctionCall ('F') also gets exactly
 // one ReadyForQuery. If an app pipelines a Sync ahead of a Query, the Sync's
 // ReadyForQuery must not be credited to the Query.
@@ -450,6 +485,27 @@ test('RealPostgres', async (t) => {
     } finally {
       await pool.end();
     }
+  });
+
+  // The step results come from real Postgres replies: a value, a row count,
+  // and an error with its SQLSTATE code (22012 = division by zero).
+  await t.test('step results (node-postgres)', async () => {
+    const results: Array<StepResult | undefined> = [];
+    const p = new PgProxy(upstream);
+    p.onQuery = (_signal, tag) => (tag === '' ? undefined : (_status, result) => results.push(result));
+    const viaHook = await serveProxy(t, p);
+    const client = new pg.Client({ connectionString: `postgres://interleave:interleave@${viaHook}/interleave?sslmode=disable` });
+    await client.connect();
+    try {
+      await client.query('/* il:req=A */ SELECT 41 + 1');
+      await assert.rejects(client.query('/* il:req=A */ SELECT 1/0'), /division by zero/);
+    } finally {
+      await client.end();
+    }
+    assert.deepEqual(results, [
+      { command: 'SELECT 1', firstValue: '42' },
+      { error: { code: '22012', message: 'division by zero' } },
+    ]);
   });
 
   // pg has no "prefer" mode (it fails on our 'N'), so the SSLRequest path is

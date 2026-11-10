@@ -6,6 +6,10 @@ import { once } from 'node:events';
 import {
   CANCEL_REQUEST_CODE,
   GSSENC_REQUEST_CODE,
+  commandTag,
+  errorFields,
+  firstColumn,
+  type ErrorInfo,
   SSL_REQUEST_CODE,
   WireReader,
   queryString,
@@ -18,9 +22,19 @@ import { errorMessage, log } from '../log.ts';
 import { forward, type ForwardHooks } from './forward.ts';
 import { requestTag } from './tag.ts';
 
+// StepResult is what a statement did, read from the reply Postgres sent before
+// its ReadyForQuery: the CommandComplete tag ("UPDATE 1"), the first column of
+// the first row, and the error if it failed. Fields are absent when the reply
+// had no such message.
+export type StepResult = {
+  command?: string;
+  firstValue?: string | null;
+  error?: ErrorInfo;
+};
+
 // DoneFn is called once Postgres has finished a query, with the status byte
-// of that query's ReadyForQuery.
-export type DoneFn = (status: ReadyStatus) => void;
+// of that query's ReadyForQuery and what the query did.
+export type DoneFn = (status: ReadyStatus, result: StepResult) => void;
 
 // OnQuery is the scheduler hook (D-017). See PgProxy.onQuery.
 export type OnQuery = (
@@ -209,8 +223,16 @@ export class PgProxy {
         // enough: JavaScript runs one piece of code at a time, so the two
         // pumps never touch it at the same moment.
         const pending: Array<DoneFn | undefined> = [];
+        // The reply to the statement Postgres is working on, collected message
+        // by message until its ReadyForQuery; then handed to done and reset.
+        const reply: { result: StepResult } = { result: {} };
         toServer.inspect = (m) => inspectQuery(onQuery, conn.signal, addr, m, pending);
-        toClient.sentReady = (m) => reportReady(addr, m, pending);
+        toClient.observe = (m) => collectResult(addr, m, reply.result);
+        toClient.sentReady = (m) => {
+          const result = reply.result;
+          reply.result = {};
+          reportReady(addr, m, pending, result);
+        };
       }
       const pump = async (where: string, src: WireReader, dst: net.Socket, hooks: ForwardHooks) => {
         try {
@@ -305,10 +327,30 @@ async function inspectQuery(
   pending.push(done);
 }
 
-// reportReady hands a ReadyForQuery's status to the oldest queued done. If
-// nothing is queued, the ReadyForQuery answers nothing we forwarded: it is
-// the one that ends startup.
-function reportReady(addr: string, m: Message, pending: Array<DoneFn | undefined>): void {
+// collectResult records what a reply message says about the statement being
+// answered. Only the first row's first column is kept. A malformed message is
+// logged and skipped: it is still forwarded, and Postgres's client judges it.
+function collectResult(addr: string, m: Message, result: StepResult): void {
+  try {
+    if (m.type === 'C') {
+      result.command = commandTag(m);
+    } else if (m.type === 'D' && !('firstValue' in result)) {
+      const value = firstColumn(m);
+      if (value !== undefined) {
+        result.firstValue = value;
+      }
+    } else if (m.type === 'E') {
+      result.error = errorFields(m);
+    }
+  } catch (err) {
+    log(`proxy: ${addr}: ${errorMessage(err)}`);
+  }
+}
+
+// reportReady hands a ReadyForQuery's status, and the result collected for
+// the statement it ends, to the oldest queued done. If nothing is queued, the
+// ReadyForQuery answers nothing we forwarded: it is the one that ends startup.
+function reportReady(addr: string, m: Message, pending: Array<DoneFn | undefined>, result: StepResult): void {
   let status: ReadyStatus;
   try {
     status = readyStatus(m);
@@ -322,7 +364,7 @@ function reportReady(addr: string, m: Message, pending: Array<DoneFn | undefined
   const done = pending.shift();
   if (done !== undefined) {
     try {
-      done(status);
+      done(status, result);
     } catch (err) {
       log(`proxy: ${addr}: done callback failed: ${errorMessage(err)}`);
     }

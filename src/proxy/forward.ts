@@ -6,6 +6,9 @@ export type ForwardHooks = {
   // inspect sees every message before it is forwarded. It may wait (a parked
   // query waits there); forward does not read on until it returns.
   inspect?: (m: Message) => Promise<void> | void;
+  // observe sees every message, just before it is queued for writing. It
+  // must not wait (it is called synchronously); use inspect for that.
+  observe?: (m: Message) => void;
   // sentReady sees every ReadyForQuery ('Z') once it has been written to dst.
   sentReady?: (m: Message) => void;
   // signal stops forward while it waits (for inspect or for 'drain').
@@ -27,7 +30,7 @@ export type ForwardHooks = {
 // sentReady is called. That costs no extra write in practice: ReadyForQuery
 // is the last message of a reply.
 export async function forward(src: WireReader, dst: Writable, hooks: ForwardHooks = {}): Promise<void> {
-  const { inspect, sentReady, signal } = hooks;
+  const { inspect, observe, sentReady, signal } = hooks;
   const held: Buffer[] = [];
   for (;;) {
     const m = await src.readMessage();
@@ -41,6 +44,7 @@ export async function forward(src: WireReader, dst: Writable, hooks: ForwardHook
       // stop here rather than forward a query nobody released.
       signal?.throwIfAborted();
     }
+    observe?.(m);
     held.push(m.raw);
     const report = sentReady !== undefined && m.type === 'Z';
     if (report || !src.hasCompleteMessage()) {
