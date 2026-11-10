@@ -28,12 +28,13 @@ if (addr === null || Number(addr[2]) > 65535) {
 const host = addr[1];
 const port = Number(addr[2]);
 
+// The pool connects on first use, so the app can start before the database
+// (or Interleave's proxy) is up; this only warns early if it is not there yet.
 const pool = newPool(values.dsn);
 try {
   await pool.query('SELECT 1');
 } catch (err) {
-  console.error(`cannot reach Postgres at ${values.dsn}: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
+  console.error(`warning: cannot reach Postgres at ${values.dsn} yet (${err instanceof Error ? err.message : String(err)}); will connect on the first request`);
 }
 
 const server = http.createServer(newHandler(pool, values.fixed));

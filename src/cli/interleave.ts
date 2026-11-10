@@ -4,12 +4,13 @@ import { parseArgs } from 'node:util';
 import { PgProxy, splitHostPort } from '../proxy/index.ts';
 import { errorMessage, log } from '../log.ts';
 
-// Exit codes (docs/SPEC.md section 3).
-export const EXIT_OK = 0;
-export const EXIT_USAGE = 2;
-export const EXIT_INTERNAL = 3;
+import { EXIT_INTERNAL, EXIT_OK, EXIT_USAGE } from './exit.ts';
+import { runExplore, runReplay, runUsage } from './explore.ts';
+
+export { EXIT_FOUND, EXIT_INTERNAL, EXIT_OK, EXIT_USAGE } from './exit.ts';
 
 const usage = `usage:
+${runUsage}
   interleave proxy [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432] [--verbose]
       pass-through proxy, for debugging (Ctrl+C to stop); --verbose logs
       every query with its request tag`;
@@ -22,6 +23,10 @@ export async function run(args: string[], signal?: AbortSignal): Promise<number>
     return EXIT_USAGE;
   }
   switch (args[0]) {
+    case 'run':
+      return runExplore(args.slice(1), signal);
+    case 'replay':
+      return runReplay(args.slice(1));
     case 'proxy':
       return runProxy(args.slice(1), signal);
     default:

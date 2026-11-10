@@ -1,0 +1,22 @@
+# Two customers redeem the single-use coupon DIWALI50 at the same moment.
+# Start the app first (it connects through Interleave's proxy on 127.0.0.1:6433):
+#   npm run coupon            (or: node victims/coupon/main.ts --fixed)
+# then: npm run interleave -- run victims/coupon/scenario.yaml
+name: coupon-double-redeem
+app:
+  base_url: http://127.0.0.1:8081
+database:
+  admin_dsn: postgres://interleave:interleave@127.0.0.1:5432/interleave?sslmode=disable
+  reset: seed.sql            # relative to this file; runs before every run
+requests:                    # fired at the same time, tagged A, B
+  - method: POST
+    path: /redeem
+    body: {code: DIWALI50, user_id: 1}
+  - method: POST
+    path: /redeem
+    body: {code: DIWALI50, user_id: 2}
+invariants:                  # each must return a single true
+  - name: coupon not over-redeemed
+    sql: SELECT uses <= max_uses FROM coupons WHERE code = 'DIWALI50'
+  - name: one redemption row per allowed use
+    sql: SELECT count(*) <= 1 FROM redemptions WHERE code = 'DIWALI50'

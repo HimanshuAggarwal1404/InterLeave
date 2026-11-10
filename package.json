@@ -12,6 +12,7 @@
     "test:sched": "node --test --test-timeout=60000 \"src/sched/*.test.ts\" \"victims/coupon/kill.test.ts\"",
     "test:repeat": "node scripts/repeat.ts 20",
     "typecheck": "tsc --noEmit",
+    "interleave": "node src/cli/main.ts",
     "proxy": "node src/cli/main.ts proxy",
     "coupon": "node victims/coupon/main.ts",
     "bench": "node src/bench/main.ts"
