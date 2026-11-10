@@ -319,3 +319,42 @@ Alternatives: leave ROLLBACK untagged as before (it would pass through unschedul
 explorer could not choose when it runs).
 Consequences: the coupon's 409 path is 3 steps for B (BEGIN, SELECT, ROLLBACK); the kill test's
 serial order is A x5 then B x3; `QueriesCarryRequestTag` expects no untagged statements.
+
+## D-022: Scenario files are YAML, parsed with the `yaml` package
+Status: Accepted      Date: 2026-11-10
+Context: `interleave run` reads a scenario (SPEC section 4): requests, reset SQL, invariants. YAML
+is easy to write by hand, but Node has no built-in YAML parser.
+Decision: Keep `scenario.yaml` and add the `yaml` npm package (no dependencies of its own).
+Alternatives: JSON scenarios with the built-in `JSON.parse` (no dependency, but noisier to write:
+quotes everywhere, no comments); a hand-written YAML subset parser (fragile).
+Consequences: One more runtime dependency. The parser output is validated field by field, so a
+typo in a scenario gives a clear error instead of a confusing run.
+
+## D-023: Exploration defaults to exhaustive DFS, capped by --max-runs
+Status: Accepted      Date: 2026-11-10
+Context: SPEC FR-14/15 define two strategies but not the default, nor what a capped run reports.
+Decision: `--strategy exhaustive` is the default, `--max-runs` defaults to 1000. The summary says
+either "complete: all N orders checked" or "stopped at --max-runs (N orders checked, more remain)".
+`--strategy random --seed S` is the alternative.
+Alternatives: random by default (often finds a bug sooner on big scenarios, but never says "all
+orders checked", which is the claim that verifies a fix).
+Consequences: A clean result on a fixed app is a real guarantee only when the summary says
+"complete". Large scenarios need a higher cap or the random strategy.
+
+## D-024: A Postgres deadlock (40P01) during a run is a finding
+Status: Accepted      Date: 2026-11-10
+Context: Some orders make the app deadlock (e.g. a fix that locks rows in different orders).
+Postgres aborts one transaction with SQLSTATE 40P01.
+Decision: The proxy reports each statement's error code to the scheduler; any 40P01 in a run is a
+finding of its own kind ("deadlock"), reported and replayable like an invariant violation.
+Alternatives: treat it as an ordinary request error (simpler, but hides a real class of bug).
+Consequences: Findings have a kind (invariant violation, deadlock). A run can have both.
+
+## D-025: "Broken fix" victim variants wait until Phase 3
+Status: Accepted      Date: 2026-11-10
+Context: A fix that looks right but still races (FOR UPDATE without BEGIN, locks in the wrong
+order) is a strong demonstration of the tool.
+Decision: Phase 2 builds exactly the SPEC exit test: 8 buggy victims and 8 correct `--fixed`
+variants. Broken-fix variants come in Phase 3.
+Alternatives: add 2-3 now (more work before the MVP exit test).
+Consequences: Phase 2 stays scoped; the README/write-up gains the broken-fix story later.
