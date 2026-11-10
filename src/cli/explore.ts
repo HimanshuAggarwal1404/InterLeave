@@ -1,6 +1,5 @@
 // The `interleave run` and `interleave replay` commands.
 import http from 'node:http';
-import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 import { DEFAULT_TIMING, Engine, type RunResult, type Strategy, type TimingOptions } from '../runner/index.ts';
 import { ScenarioError, loadScenario, type Scenario } from '../scenario/index.ts';
@@ -8,6 +7,7 @@ import { describeFindings, formatSummary, formatTimeline, readSchedule, stripTag
 import { parseDuration } from '../duration.ts';
 import { errorMessage } from '../log.ts';
 import { EXIT_FOUND, EXIT_INTERNAL, EXIT_OK, EXIT_USAGE } from './exit.ts';
+import { lineReader } from './lines.ts';
 
 export const runUsage = `  interleave run <scenario.yaml> [--strategy exhaustive|random] [--max-runs 1000] [--seed 1]
                  [--all] [--out .interleave] [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432]
@@ -144,18 +144,21 @@ export async function runReplay(args: string[]): Promise<number> {
     return setup;
   }
   const { scenario, engine } = setup;
-  const rl = values.step ? createInterface({ input: process.stdin, output: process.stderr }) : undefined;
+  const lines = values.step ? lineReader(process.stdin) : undefined;
   try {
     console.log(`interleave: replaying run ${file.run} of ${file.name} (${file.choices.length} decisions)`);
     let result: RunResult;
     try {
       result = await engine.replay(scenario, file.choices, {
         ...times,
-        ...(rl === undefined
+        ...(lines === undefined
           ? {}
           : {
               beforeRelease: async (step: { tag: string; sql: string }) => {
-                await rl.question(`next: [${step.tag}] ${stripTag(step.sql)}   (Enter to run it) `);
+                process.stderr.write(`next: [${step.tag}] ${stripTag(step.sql)}   (Enter to run it) `);
+                if ((await lines.next()) === undefined) {
+                  process.stderr.write('(end of input: running the rest without pausing)\n');
+                }
               },
             }),
       });
@@ -176,7 +179,7 @@ export async function runReplay(args: string[]): Promise<number> {
     console.log('No violation: this order no longer breaks the invariants (fixed?).');
     return EXIT_OK;
   } finally {
-    rl?.close();
+    lines?.close();
     await engine.close();
   }
 }
