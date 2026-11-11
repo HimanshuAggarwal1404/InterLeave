@@ -1,0 +1,19 @@
+# Two users book seat 12A at the same moment.
+# Start the app first: node victims/seat/main.ts   (add --fixed for the fixed version)
+# then: npm run interleave -- run victims/seat/scenario.yaml
+name: seat-double-booking
+app:
+  base_url: http://127.0.0.1:8083
+database:
+  admin_dsn: postgres://interleave:interleave@127.0.0.1:5432/interleave?sslmode=disable
+  reset: seed.sql
+requests:
+  - method: POST
+    path: /book
+    body: {seat: 12A, user_id: 1}
+  - method: POST
+    path: /book
+    body: {seat: 12A, user_id: 2}
+invariants:
+  - name: seat booked at most once
+    sql: SELECT count(*) <= 1 FROM bookings WHERE seat = '12A'
