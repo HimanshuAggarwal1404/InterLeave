@@ -11,7 +11,12 @@
 //
 // A decision point is reached when no request is executing, no request is
 // running (or the quiet period has passed since the last event), and at least
-// one is parked. Then the chooser picks which parked request goes next; that
+// one is parked. A request that has not sent its first statement yet gets
+// longer: up to the start grace, counted from the start of the run, because
+// before its first statement the app may still be opening a database
+// connection (which takes longer than the quiet period). Without it, the first
+// decision would depend on connection timing, and the same scenario could be
+// explored in a different order. Then the chooser picks which parked request goes next; that
 // is how the explorer controls the order. Like v1 (sched.ts), all state lives
 // in this object and one method, #evaluate, makes every decision; it runs
 // after every event (a statement arrives or finishes, a request finishes, a
@@ -66,6 +71,7 @@ export type RunSchedulerOptions = {
   requests: readonly string[]; // the tags fired in this run, in request order
   choose: Chooser;
   quietMs?: number; // default 50: how long a running request may delay a decision
+  startGraceMs?: number; // default 1000: the same for a request's first statement, from the run's start
   lockWaitMs?: number; // default 200: when an executing statement counts as blocked
   // beforeRelease, if set, is awaited before each release (replay --step).
   beforeRelease?: (step: { tag: string; sql: string }) => Promise<void>;
@@ -79,6 +85,7 @@ type Parked = {
 
 type Request = {
   state: RequestState;
+  sentFirst: boolean; // it has parked a statement in this run
   parked?: Parked;
   lockTimer?: NodeJS.Timeout;
 };
@@ -89,6 +96,7 @@ export class RunScheduler {
   readonly #choose: Chooser;
   readonly #quietMs: number;
   readonly #lockWaitMs: number;
+  readonly #startGraceMs: number;
   readonly #beforeRelease: RunSchedulerOptions['beforeRelease'];
   #steps: ExecutedStep[] = [];
   #decisions: Decision[] = [];
@@ -97,17 +105,20 @@ export class RunScheduler {
   #releasing = false; // waiting for beforeRelease: no other decision meanwhile
   #quietTimer: NodeJS.Timeout | undefined;
   #quietOver = false; // the quiet period passed with no event
+  #graceTimer: NodeJS.Timeout | undefined;
+  #graceOver = false; // the start grace passed
   #finish: ((trace: RunTrace) => void) | undefined;
   #stopListening: (() => void) | undefined;
 
   constructor(options: RunSchedulerOptions) {
     this.#order = [...options.requests];
     for (const tag of this.#order) {
-      this.#requests.set(tag, { state: 'running' });
+      this.#requests.set(tag, { state: 'running', sentFirst: false });
     }
     this.#choose = options.choose;
     this.#quietMs = options.quietMs ?? 50;
     this.#lockWaitMs = options.lockWaitMs ?? 200;
+    this.#startGraceMs = options.startGraceMs ?? 1000;
     this.#beforeRelease = options.beforeRelease;
   }
 
@@ -135,6 +146,7 @@ export class RunScheduler {
       step.unlisten = () => signal.removeEventListener('abort', onAbort);
       r.parked = step;
       r.state = 'parked';
+      r.sentFirst = true;
       this.#changed();
     });
   }
@@ -173,6 +185,11 @@ export class RunScheduler {
       }
       signal.addEventListener('abort', onAbort, { once: true });
       this.#stopListening = () => signal.removeEventListener('abort', onAbort);
+      this.#graceTimer = setTimeout(() => {
+        this.#graceTimer = undefined;
+        this.#graceOver = true;
+        this.#evaluate();
+      }, this.#startGraceMs);
       this.#evaluate();
     });
   }
@@ -203,7 +220,11 @@ export class RunScheduler {
     if (runnable.length === 0) {
       return; // wait for a running request to park or finish, or a blocked one to finish
     }
-    if (states.includes('running') && !this.#quietOver) {
+    const running = this.#order.filter((tag) => this.#requests.get(tag)?.state === 'running');
+    if (!this.#graceOver && running.some((tag) => !this.#requests.get(tag)?.sentFirst)) {
+      return; // wait for its first statement, or for the start grace timer
+    }
+    if (running.length > 0 && !this.#quietOver) {
       // A request is in app code and may be about to send a statement that
       // should be part of this decision. Wait for it, but only up to the
       // quiet period: it may never send one (FR-10).
@@ -310,6 +331,8 @@ export class RunScheduler {
     this.#ended = true;
     clearTimeout(this.#quietTimer);
     this.#quietTimer = undefined;
+    clearTimeout(this.#graceTimer);
+    this.#graceTimer = undefined;
     this.#stopListening?.();
     for (const r of this.#requests.values()) {
       clearTimeout(r.lockTimer);

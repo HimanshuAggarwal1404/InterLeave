@@ -143,11 +143,41 @@ test('QuietPeriodDecidesWithoutWaitingForever', async (t) => {
   const calls: string[][] = [];
   const s = scheduler(['A', 'B'], { quietMs: 50, choose: (r) => (calls.push([...r]), r[0]) });
   s.run(signal);
-  // B never sends anything. After the quiet period A is released anyway.
+  const a = s.onQuery(signal, 'A', 'a1');
+  const b = s.onQuery(signal, 'B', 'b1');
+  (await receive(a, 'A was never released'))?.('T', {});
+  // A is back in app code and never sends anything more. After the quiet
+  // period B is released anyway.
   const started = Date.now();
-  await receive(s.onQuery(signal, 'A', 'a1'), 'A was never released although B stayed quiet');
+  await receive(b, 'B was never released although A stayed quiet');
   assert.ok(Date.now() - started >= 40, 'released before the quiet period passed');
-  assert.deepEqual(calls, [['A']]);
+  assert.deepEqual(calls, [['A', 'B'], ['B']]);
+});
+
+test('WaitsLongerForAFirstStatement', async (t) => {
+  const signal = testSignal(t);
+  const calls: string[][] = [];
+  // The quiet period is short, but B has not sent its first statement yet (its
+  // app may still be opening a database connection): a decision waits for the
+  // start grace, so the first decision does not depend on connection timing.
+  const s = scheduler(['A', 'B'], { quietMs: 20, startGraceMs: 60_000, choose: (r) => (calls.push([...r]), r[0]) });
+  s.run(signal);
+  const a = s.onQuery(signal, 'A', 'a1');
+  await notWithin(a, 'A was released while B had not sent its first statement yet');
+  s.onQuery(signal, 'B', 'b1');
+  await receive(a, 'A was not released once B parked');
+  assert.deepEqual(calls, [['A', 'B']]);
+});
+
+test('StartGraceEnds', async (t) => {
+  const signal = testSignal(t);
+  const s = scheduler(['A', 'B'], { quietMs: 20, startGraceMs: 100 });
+  // B never sends anything: after the start grace (counted from the start of
+  // the run) A is released anyway.
+  const started = Date.now();
+  s.run(signal);
+  await receive(s.onQuery(signal, 'A', 'a1'), 'A was never released although the start grace passed');
+  assert.ok(Date.now() - started >= 90, 'released before the start grace passed');
 });
 
 test('LockWaitMarksBlockedAndContinues', async (t) => {

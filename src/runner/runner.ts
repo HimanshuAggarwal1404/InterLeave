@@ -15,6 +15,7 @@ export type TimingOptions = {
   quietMs: number; // FR-10, default 50
   lockWaitMs: number; // FR-11, default 200
   runTimeoutMs: number; // FR-12, default 10 s
+  startGraceMs?: number; // how long a request's first statement may delay a decision; default 1 s
 };
 
 export const DEFAULT_TIMING: TimingOptions = { quietMs: 50, lockWaitMs: 200, runTimeoutMs: 10_000 };
@@ -179,6 +180,7 @@ export class Engine {
       choose,
       quietMs: opts.quietMs,
       lockWaitMs: opts.lockWaitMs,
+      ...(opts.startGraceMs === undefined ? {} : { startGraceMs: opts.startGraceMs }),
       ...(opts.beforeRelease === undefined ? {} : { beforeRelease: opts.beforeRelease }),
     });
     this.#current = sched;
