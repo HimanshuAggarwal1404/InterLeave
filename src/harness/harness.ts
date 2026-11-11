@@ -29,9 +29,20 @@ export function fireRequests(baseUrl: string, requests: readonly ScenarioRequest
 
 function fireOne(baseUrl: string, r: ScenarioRequest, options: FireOptions): Promise<Response> {
   const body = r.body === undefined ? undefined : JSON.stringify(r.body);
-  const headers: Record<string, string> = { ...r.headers, 'X-Interleave-Req': r.tag };
+  // Header names are case-insensitive, so they are compared in lowercase: a
+  // scenario's own content-type wins over the default, while the tag and the
+  // length always come from here.
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(r.headers ?? {})) {
+    if (!['x-interleave-req', 'content-length'].includes(name.toLowerCase())) {
+      headers[name] = value;
+    }
+  }
+  headers['X-Interleave-Req'] = r.tag;
   if (body !== undefined) {
-    headers['Content-Type'] ??= 'application/json';
+    if (!Object.keys(headers).some((name) => name.toLowerCase() === 'content-type')) {
+      headers['Content-Type'] = 'application/json';
+    }
     headers['Content-Length'] = String(Buffer.byteLength(body));
   }
   return new Promise<Response>((resolve) => {

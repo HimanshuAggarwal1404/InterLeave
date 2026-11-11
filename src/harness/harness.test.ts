@@ -48,6 +48,28 @@ test('FiresTaggedRequestsTogether', async (t) => {
   );
 });
 
+test('ScenarioHeadersDoNotDuplicate', async (t) => {
+  // Header names are case-insensitive: a scenario's "content-type" replaces
+  // the default Content-Type, and the tag header always comes from the
+  // harness, whatever case the scenario wrote it in.
+  let raw: string[] = [];
+  const server = http.createServer((req, res) => {
+    raw = req.rawHeaders;
+    req.resume();
+    req.on('end', () => res.end('ok'));
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  onCleanup(t, () => new Promise((r) => server.close(r)));
+  const base = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
+
+  await fireRequests(base, [
+    { tag: 'A', method: 'POST', path: '/', body: { x: 1 }, headers: { 'content-type': 'application/vnd.test+json', 'x-interleave-req': 'Z' } },
+  ]);
+  const values = (name: string) => raw.filter((_, i) => i % 2 === 1 && raw[i - 1].toLowerCase() === name);
+  assert.deepEqual(values('content-type'), ['application/vnd.test+json']);
+  assert.deepEqual(values('x-interleave-req'), ['A']);
+});
+
 test('ReportsAnUnreachableApp', async () => {
   const finished: string[] = [];
   // Port 9 (discard) on 127.0.0.1: nothing listens there.
