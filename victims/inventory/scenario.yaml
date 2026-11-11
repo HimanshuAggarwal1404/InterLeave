@@ -1,0 +1,21 @@
+# Two customers order the last widget at the same moment.
+# Start the app first: node victims/inventory/main.ts   (add --fixed for the fixed version)
+# then: npm run interleave -- run victims/inventory/scenario.yaml
+name: inventory-last-item
+app:
+  base_url: http://127.0.0.1:8082
+database:
+  admin_dsn: postgres://interleave:interleave@127.0.0.1:5432/interleave?sslmode=disable
+  reset: seed.sql
+requests:
+  - method: POST
+    path: /order
+    body: {product: widget, qty: 1, user_id: 1}
+  - method: POST
+    path: /order
+    body: {product: widget, qty: 1, user_id: 2}
+invariants:
+  - name: stock never negative
+    sql: SELECT stock >= 0 FROM products WHERE name = 'widget'
+  - name: one order for the one widget
+    sql: SELECT count(*) <= 1 FROM orders WHERE product = 'widget'

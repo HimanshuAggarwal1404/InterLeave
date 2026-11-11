@@ -15,7 +15,8 @@
     "interleave": "node src/cli/main.ts",
     "proxy": "node src/cli/main.ts proxy",
     "coupon": "node victims/coupon/main.ts",
-    "bench": "node src/bench/main.ts"
+    "bench": "node src/bench/main.ts",
+    "test:acceptance": "node --test --test-timeout=600000 --test-concurrency=1 victims/acceptance.e2e.ts"
   },
   "dependencies": {
     "pg": "^8.23.1",
