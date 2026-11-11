@@ -1,0 +1,21 @@
+# Two withdrawals of 70 from a wallet holding 100, at the same moment.
+# Start the app first: node victims/wallet/main.ts   (add --fixed for the fixed version)
+# then: npm run interleave -- run victims/wallet/scenario.yaml
+name: wallet-overdraft
+app:
+  base_url: http://127.0.0.1:8084
+database:
+  admin_dsn: postgres://interleave:interleave@127.0.0.1:5432/interleave?sslmode=disable
+  reset: seed.sql
+requests:
+  - method: POST
+    path: /withdraw
+    body: {wallet: 1, amount: 70}
+  - method: POST
+    path: /withdraw
+    body: {wallet: 1, amount: 70}
+invariants:
+  - name: balance never negative
+    sql: SELECT balance >= 0 FROM wallets WHERE id = 1
+  - name: only one withdrawal fits
+    sql: SELECT count(*) <= 1 FROM withdrawals WHERE wallet = 1

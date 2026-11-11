@@ -17,6 +17,7 @@ import { startServer, testPool } from './common/testutil.ts';
 import { newHandler as coupon } from './coupon/app.ts';
 import { newHandler as inventory } from './inventory/app.ts';
 import { newHandler as seat } from './seat/app.ts';
+import { newHandler as wallet } from './wallet/app.ts';
 import { DEFAULT_TIMING, Engine, type ExploreSummary, type RunResult } from '../src/runner/index.ts';
 import { loadScenario, type Scenario } from '../src/scenario/index.ts';
 import { formatTimeline } from '../src/report/index.ts';
@@ -28,6 +29,7 @@ const VICTIMS: [name: string, newHandler: NewHandler][] = [
   ['coupon', coupon],
   ['inventory', inventory],
   ['seat', seat],
+  ['wallet', wallet],
 ];
 
 const OPTIONS = { ...DEFAULT_TIMING, strategy: 'exhaustive' as const, seed: 1, maxRuns: 1000, all: false };
