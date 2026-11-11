@@ -3,16 +3,17 @@
 Every test command, what it proves and how long it takes, plus manual checks to try by hand.
 Run everything from Git Bash in the repo folder, after `npm install` once. Tests that need the
 local Postgres (127.0.0.1:5432, database `interleave`) skip themselves if it is not running.
-Durations were measured on the development laptop (2026-10-10).
+Durations were measured on the development laptop (2026-10-10; Phase 2 rows 2026-11-11).
 
 ## Commands
 
 | Command | What it proves | Time |
 |---|---|---|
 | `npx tsc --noEmit` (or `npm run typecheck`) | Every file type-checks under `strict`, and uses only TypeScript syntax that Node can strip (`erasableSyntaxOnly`). Prints nothing when fine. | ~1 s |
-| `npm test` | The whole suite (~140 tests): pgwire framing on captured bytes, the proxy against a fake and the real Postgres, batching and backpressure, tags, the scheduler hook, the CLI, the bench helpers, the scheduler's spec, the coupon app (race exists, fix holds, tags, simple protocol, escaping) and the kill test. It is two runs: `src/` files in parallel, then the victim files one at a time, because they share the coupon tables (in parallel, one file's `TRUNCATE` would wait on the kill test's deliberately held transaction). Each test file runs in its own process; a file whose process does not exit after its tests (a leaked socket or timer) makes the run hang, so a run that finishes is itself evidence. | ~5 s |
+| `npm test` | The whole suite (~225 tests): pgwire framing on captured bytes, the proxy against a fake and the real Postgres, batching and backpressure, tags, step results, the scheduler hook, both schedulers' specs, the explorers, scenario parsing, the harness, reset, the oracle, the runner and report, the CLI, the bench helpers; then the victims: the coupon app (race exists, fix holds, tags, simple protocol, escaping), the kill test, `interleave run`/`replay` on coupon (in-process and as a real CLI process), and every victim's sequential behaviour. It is two runs: `src/` files in parallel, then the victim files one at a time, because they share tables (in parallel, one file's `TRUNCATE` would wait on the kill test's deliberately held transaction). Each test file runs in its own process; a file whose process does not exit after its tests (a leaked socket or timer) makes the run hang, so a run that finishes is itself evidence. | ~5 s |
 | `npm run test:repeat` | The pgwire, proxy and sched suites 20 times in a row, stopping at the first failure. Timing-dependent bugs show up as an occasional failure; this is the stand-in for a race detector (see below). `node scripts/repeat.ts N [globs]` runs other files or another count. | ~23 s |
-| `npm run test:sched` | Just the scheduler: its spec (`src/sched/sched.test.ts`, 8 tests) and the Phase 1 kill test (`victims/coupon/kill.test.ts`: the bad order double-redeems 10/10, the serial order never). Both are also part of `npm test`. | ~2 s |
+| `npm run test:sched` | Just the schedulers: their specs (`src/sched/sched.test.ts` for the Phase 1 fixed-order scheduler, `src/sched/run.test.ts` for RunScheduler) and the Phase 1 kill test (`victims/coupon/kill.test.ts`: the bad order double-redeems 10/10, the serial order never). Both are also part of `npm test`. | ~2 s |
+| `npm run test:acceptance` | SPEC section 8 for all 8 victims (`victims/acceptance.e2e.ts`): exhaustive finds the race and the finding replays identically 3 times, the fixed variant is clean in every order (exploration complete), random with seed 1 finds the race. Writes the numbers for `docs/RESULTS.md` to `.interleave/acceptance-results.json`. Not part of `npm test` (slow; shares the victims' tables). | ~70 s |
 | `node --test <file>` | One file, e.g. `node --test src/proxy/forward.test.ts`. | |
 | `node --test --test-name-pattern=<regex> <file>` | One test, e.g. `--test-name-pattern=RaceIsReal victims/coupon/app.test.ts`. | |
 | `npm run bench -- [flags] [URL ...]` | Not a test: measures requests/sec and latency (see `docs/RESULTS.md` for setup and commands). | minutes |
@@ -87,6 +88,17 @@ psql "postgresql://interleave:interleave@127.0.0.1:6433/interleave" -c "SELECT 1
 INTERLEAVE_TEST_DSN="postgres://interleave:interleave@127.0.0.1:6433/interleave?sslmode=disable" \
   node --test --test-name-pattern="RaceIsReal|FixedNeverOverRedeems" victims/coupon/app.test.ts
 ```
+
+**Find a race with Interleave.** Two terminals. The app's database is Interleave's proxy, which
+`interleave run` starts itself (the app only warns until it is up):
+```bash
+node victims/inventory/main.ts                              # terminal 1 (add --fixed: no race)
+npm run interleave -- run victims/inventory/scenario.yaml   # terminal 2: timeline, exit code 1
+npm run interleave -- replay .interleave/inventory-last-item-3.json --step   # Enter per statement
+```
+Every victim works the same way: `victims/<name>/main.ts` and `victims/<name>/scenario.yaml`
+(ports 8081-8088). `--strategy random --seed 7` explores randomly; `--all` keeps going and
+reports every distinct violation.
 
 **Break something and watch a test catch it.** In `src/proxy/forward.ts`, delete the line
 `await flush(dst, held, signal);` just above `await inspect(m);`, then run

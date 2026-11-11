@@ -39,6 +39,8 @@ src/proxy/        Accepts client conns, dials upstream, forwards bytes, extracts
                   tags, hands tagged Query messages to the scheduler, reports completions.
 src/sched/        Parks steps, tracks request states, decides at decision points,
                   lock-wait timeout, quiet period. Owns the "what may run now" logic.
+                  run.ts: RunScheduler (asks a chooser at each decision point; used by the
+                  runner). sched.ts: the Phase 1 fixed-order scheduler, kept for the kill test.
 src/explore/      Strategies that produce choices: exhaustive DFS with replay,
                   random (seeded). Later: PCT, partial-order reduction.
 src/oracle/       Runs invariants; later the serial-equivalence check.
@@ -47,10 +49,15 @@ src/reset/        Executes reset SQL on the admin connection. Later: template-DB
 src/scenario/     Parses and validates scenario.yaml.
 src/report/       Terminal timeline, schedule.json writer/reader, later HTML report.
 src/runner/       Orchestrates one run and the loop of runs: reset → start requests →
-                  drive scheduler with explorer choices → judge → record.
+                  drive scheduler with explorer choices → judge → record. Engine owns the
+                  in-process proxy and the admin connection.
+src/duration.ts   Parses and prints durations ("200ms", "10s") for CLI flags.
 src/testutil/     Helpers shared by tests (byte fixtures, cleanup that always runs).
 victims/<name>/   Deliberately racy test apps (TypeScript + pg), each with app.ts, main.ts,
-                  seed.sql, scenario.yaml, README.md.
+                  seed.sql, scenario.yaml, README.md, app.test.ts.
+victims/common/   The kit the victims share: endpoint() (HTTP, tag check, JSON body),
+                  transaction() (tagged BEGIN/COMMIT/ROLLBACK), safe SQL literals, startVictim().
+victims/acceptance.e2e.ts  SPEC section 8 for all 8 victims (npm run test:acceptance).
 scripts/          Small Node scripts (repeat.ts runs the concurrent suites many times).
 ```
 
@@ -66,6 +73,9 @@ shared types. Keep `sched` free of networking so it can be unit-tested with fake
   `executing` (step released, awaiting `ReadyForQuery`) · `blocked` (executing past the lock-wait
   timeout) · `finished` (HTTP response received).
 - **Decision point**: no request is `running` or `executing`; at least one is `parked`.
+  A `running` request is waited for only up to the quiet period (50 ms after the last event), or,
+  before its first statement, up to the start grace (1 s from the start of the run: the app may
+  still be opening its database connection).
   (Blocked requests are not runnable.) If none are parked and none are executing, the run is
   stuck or done.
 - **Choice**: at a decision point, which parked request's step to release.
@@ -78,8 +88,8 @@ shared types. Keep `sched` free of networking so it can be unit-tested with fake
 2. `harness` fires all requests concurrently, each with its tag header.
 3. The app executes; each SQL statement reaches the `proxy` with `/* il:req=X */`.
 4. `proxy` sends the step to `sched` and blocks that connection's forwarding until released.
-5. `sched` waits for a decision point (quiet period handles requests still in app code), asks the
-   explorer for a choice, releases that step. `proxy` forwards it upstream.
+5. `sched` waits for a decision point (quiet period and start grace handle requests still in app
+   code), asks the explorer for a choice, releases that step. `proxy` forwards it upstream.
 6. `proxy` sees `ReadyForQuery` from upstream for that connection, forwards it to the client,
    tells `sched` the step completed (with a result summary for the timeline).
 7. If `ReadyForQuery` does not arrive within the lock-wait timeout, `sched` marks the request

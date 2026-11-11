@@ -117,6 +117,53 @@ because direct swung between 15.3k and 23.7k req/s across rounds (see notes belo
 ## Detection per victim (Phase 2 onward)
 | Date | Commit | Victim | Strategy | Seed | Found? | Runs to first violation | Runs/sec | Resets/sec | Fixed variant clean? |
 |---|---|---|---|---|---|---|---|---|---|
+| 2026-11-11 | 864855c | coupon | exhaustive | - | yes | 3 (0.235 s) | 12.601 | 60.457 | yes, all 36 orders |
+| 2026-11-11 | 864855c | coupon | random | 1 | yes | 1 (0.116 s) | 8.398 | 70.573 | yes, all 36 orders |
+| 2026-11-11 | 864855c | inventory | exhaustive | - | yes | 3 (0.194 s) | 15.285 | 75.978 | yes, all 24 orders |
+| 2026-11-11 | 864855c | inventory | random | 1 | yes | 1 (0.228 s) | 4.337 | 49.091 | yes, all 24 orders |
+| 2026-11-11 | 864855c | seat | exhaustive | - | yes | 4 (0.189 s) | 20.918 | 77.809 | yes, all 36 orders |
+| 2026-11-11 | 864855c | seat | random | 1 | yes | 4 (0.187 s) | 21.135 | 97.079 | yes, all 36 orders |
+| 2026-11-11 | 864855c | wallet | exhaustive | - | yes | 3 (0.12 s) | 24.61 | 157.066 | yes, all 92 orders |
+| 2026-11-11 | 864855c | wallet | random | 1 | yes | 1 (0.079 s) | 12.379 | 120.035 | yes, all 92 orders |
+| 2026-11-11 | 864855c | username | exhaustive | - | yes | 3 (0.106 s) | 27.828 | 148.019 | yes, all 36 orders |
+| 2026-11-11 | 864855c | username | random | 1 | yes | 2 (0.096 s) | 20.318 | 130.798 | yes, all 36 orders |
+| 2026-11-11 | 864855c | transfer | exhaustive | - | yes | 3 (0.128 s) | 23.045 | 106.516 | yes, all 50 orders |
+| 2026-11-11 | 864855c | transfer | random | 1 | yes | 1 (0.3 s) | 3.311 | 118.437 | yes, all 50 orders |
+| 2026-11-11 | 864855c | approval | exhaustive | - | yes | 3 (0.112 s) | 26.278 | 104.562 | yes, all 92 orders |
+| 2026-11-11 | 864855c | approval | random | 1 | yes | 1 (0.109 s) | 8.944 | 72.839 | yes, all 92 orders |
+| 2026-11-11 | 864855c | counter | exhaustive | - | yes | 3 (0.181 s) | 16.407 | 47.626 | yes, all 24 orders |
+| 2026-11-11 | 864855c | counter | random | 1 | yes | 1 (0.199 s) | 4.938 | 75.631 | yes, all 24 orders |
+
+**Fixed variants, explored completely (exhaustive, same run).** These are the meaningful speed
+numbers: the rows above stop after 1-4 runs, so their runs/sec mostly measures the first run
+(which includes opening the app's database connections) and is noisy.
+
+| Victim | Orders explored (complete) | Seconds | Runs/sec | Resets/sec |
+|---|---|---|---|---|
+| coupon | 36 | 6.404 | 5.621 | 73.002 |
+| inventory | 24 | 3.741 | 6.415 | 81.247 |
+| seat | 36 | 6.546 | 5.499 | 61.954 |
+| wallet | 92 | 12.742 | 7.22 | 125.21 |
+| username | 36 | 5.726 | 6.287 | 117.934 |
+| transfer | 50 | 8.785 | 5.692 | 118.093 |
+| approval | 92 | 13.076 | 7.036 | 67.86 |
+| counter | 24 | 3.667 | 6.545 | 69.055 |
+
+2026-11-11 notes:
+- Command: `npm run test:acceptance` (`victims/acceptance.e2e.ts`), tree at 864855c; raw numbers in
+  `.interleave/acceptance-results.json`. In-process: the test starts the engine (proxy on a free
+  port), the victim app pointed at it, and calls the same `Engine.explore` / `Engine.replay` as
+  `interleave run` / `interleave replay`. Timing defaults: quiet 50 ms, lock wait 200 ms, start
+  grace 1 s, run timeout 10 s. `--max-runs` 1000 (exhaustive), 200 (random).
+- Every exhaustive finding replayed identically 3 times out of 3 (same decisions, same violation).
+- Runs/sec is low in the fixed variants because their fixes make one request wait for a lock: each
+  such order costs the 200 ms lock-wait timeout before the scheduler moves on. The number of orders
+  depends on how many statements each request sends and where it blocks: in approval the losing
+  request sends 2 statements before it can be stopped (coupon's loser blocks on its 2nd), and in
+  wallet the losing request retries a whole second transaction.
+- Resets/sec = runs / total reset time (TRUNCATE + seed, on the admin connection).
+- Exhaustive found every race in 3-4 runs: the first orders it tries run A's transaction first,
+  which is serial and safe; the race appears as soon as B's first statements move before A's write.
 
 ## Baseline: naive concurrent blasting (for comparison)
 | Date | Victim | Requests fired per trial | Trials | Trials that exposed the bug |

@@ -23,6 +23,8 @@ placement prep). Each phase has an exit test. Do not start a phase before the pr
   and the opposite order never does. If this fails after 2 weeks, re-scope before continuing.
 
 ## Phase 2: MVP engine (weeks 3-5)
+Done 2026-11-11: all 8 victims found and all 8 fixed variants clean (`npm run test:acceptance`),
+numbers in `RESULTS.md`.
 - `sched`: request states, decision points, quiet period, lock-wait timeout, run timeout.
 - `explore`: exhaustive DFS with replay, seeded random.
 - `oracle`: invariant queries.

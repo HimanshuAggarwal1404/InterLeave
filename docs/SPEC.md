@@ -20,12 +20,15 @@ violation, and prints a minimal-enough failing timeline that can be replayed det
 ## 3. CLI (MVP)
 
 ```
-interleave run <scenario.yaml> [--strategy exhaustive|random] [--max-runs N] [--seed S]
+interleave run <scenario.yaml> [--strategy exhaustive|random] [--max-runs 1000] [--seed 1] [--all]
+                [--out .interleave] [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432]
+                [--quiet 50ms] [--lock-wait 200ms] [--run-timeout 10s]
 interleave replay <schedule.json> [--step]
 interleave proxy [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432] [--verbose]   # pass-through only, for debugging (D-012); --verbose logs queries + tags
 ```
 
-Exit codes: `0` no violation found, `1` violation found, `2` usage or configuration error,
+`run` starts its own proxy on `--listen` (the victim app must already point its database at it) and
+explores; `exhaustive` is the default and stops after `--max-runs` (D-023). Exit codes: `0` no violation found, `1` violation found, `2` usage or configuration error,
 `3` internal error.
 
 ## 4. Scenario file format (MVP)
@@ -36,7 +39,7 @@ app:
   base_url: http://127.0.0.1:8081       # victim app, already running, DB pointed at :6433
 database:
   admin_dsn: postgres://interleave:interleave@127.0.0.1:5432/interleave?sslmode=disable
-  reset: victims/coupon/seed.sql        # executed on admin connection before every run
+  reset: seed.sql                       # relative to this file; executed on the admin connection before every run
 requests:                               # fired concurrently, each gets a tag A, B, ...
   - method: POST
     path: /redeem
@@ -79,7 +82,9 @@ invariants:                             # each must return a single boolean true
 - FR-9: Each tagged statement is parked until the scheduler releases it.
 - FR-10: A decision point is reached when every in-flight request is parked, blocked, or finished.
   A request that is neither (running app code) is waited for up to a quiet period (default 50 ms,
-  configurable).
+  configurable). Before a request's first statement the wait is longer, up to a start grace of 1 s
+  from the start of the run: the app may still be opening its database connection, and the first
+  decision must not depend on how long that takes (NFR-2).
 - FR-11: Lock-wait detection (MVP): if a released statement has not returned `ReadyForQuery`
   within a timeout (default 200 ms), mark that request blocked and continue scheduling others.
   When its `ReadyForQuery` arrives it becomes runnable again.
@@ -116,18 +121,19 @@ fix. TypeScript + `node:http` + `pg`, with `sslmode=disable` in the DSN. Every q
 plain text with no values array, so `pg` uses the simple protocol (D-003); values are inlined
 with `escapeLiteral` (strings) or after an integer check (numbers).
 
-| Name | Race | Invariant |
-|---|---|---|
-| coupon | check-then-act on uses count | `uses <= max_uses` |
-| inventory | two orders for the last item in stock | `stock >= 0` |
-| seat | two bookings for one seat (no unique constraint) | one booking per seat |
-| wallet | two withdrawals overdraw balance | `balance >= 0` |
-| username | two signups with same username | unique usernames |
-| transfer | lost update on read-modify-write in app code | total money conserved |
-| approval | two approvers act on one pending request | one approval per request |
-| counter | non-atomic increment (read, add in app, write) | final count = number of increments |
+| Name | Port | Race | Invariant | Fix (`--fixed`) |
+|---|---|---|---|---|
+| coupon | 8081 | check-then-act on uses count | `uses <= max_uses` | `SELECT ... FOR UPDATE` |
+| inventory | 8082 | two orders for the last item in stock | `stock >= 0` | conditional `UPDATE ... WHERE stock >= qty` |
+| seat | 8083 | two bookings for one seat (no unique constraint) | one booking per seat | lock the seat row first |
+| wallet | 8084 | two withdrawals overdraw balance | `balance >= 0` | `SERIALIZABLE` + retry on 40001 |
+| username | 8085 | two signups with same username | unique usernames | advisory lock on the name |
+| transfer | 8086 | lost update on read-modify-write in app code | total money conserved; balances match the log | lock both rows in id order |
+| approval | 8087 | two approvers act on one pending request | one approval per request | optimistic locking (version column) |
+| counter | 8088 | non-atomic increment (read, add in app, write) | final count = number of increments | `SET n = n + 1` |
 
 Each victim also has a fixed variant (flag `--fixed`) that Interleave must report as clean.
+`npm run test:acceptance` checks both for all 8 (`victims/acceptance.e2e.ts`).
 
 ## 7. Non-functional requirements
 

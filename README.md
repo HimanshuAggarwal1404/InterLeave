@@ -4,11 +4,11 @@
 Interleave finds race conditions in web apps that use Postgres. It is a command-line testing tool
 (like a test runner), not a website. It is written in TypeScript and runs on Node.js.
 
-> **Status:** Phase 0 and Phase 1 done: `pgwire`, the proxy, request tags, the scheduler hook,
-> and a first scheduler that holds statements and releases them in a hard-coded order. The Phase 1
-> exit test passes: one order breaks the coupon 10 times out of 10, the opposite order never does.
-> Next is Phase 2, the engine that tries orders by itself. This README explains, in plain words, everything that exists so far and how
-> to try each piece yourself. The full plan is in `docs/ROADMAP.md`; the detailed "why" is in
+> **Status:** Phases 0-2 done: the MVP works. `interleave run` tries statement orders by itself,
+> finds the race in all 8 victim apps within 3-4 runs, reports none in any of their fixed versions
+> (every order checked), and every finding replays identically with `interleave replay` (numbers in
+> `docs/RESULTS.md`). Next is Phase 3: making the search smarter. This README explains, in plain
+> words, everything that exists so far and how to try each piece yourself. The full plan is in `docs/ROADMAP.md`; the detailed "why" is in
 > `docs/OVERVIEW.md`; every test command is in `docs/TESTING.md`.
 
 ---
@@ -52,15 +52,21 @@ replay that order on demand. Instead of hoping to get unlucky, it tries every or
 | 8b | Step done | The proxy tells its hook when each statement has finished, and how (`ReadyForQuery` status) | `src/proxy/proxy.ts`, `src/pgwire/ready.ts` |
 | 8c | `--fixed` coupon | The correct version of the app (`SELECT ... FOR UPDATE`), proven by blasting | `victims/coupon/` |
 | 8d | Scheduler v1 + kill test | Holds tagged statements and releases them in a given order; the Phase 1 exit test | `src/sched/`, `victims/coupon/kill.test.ts` |
-| 9 | Project docs | Spec, architecture, roadmap, decisions, overview, results, testing | `docs/` |
+| 9 | Scheduler v2 | Decides by itself *when* to release: request states, decision points, quiet period, lock-wait detection | `src/sched/run.ts` |
+| 10 | Explorers | Choose *which* request goes next: every order (exhaustive DFS), seeded random, replay | `src/explore/` |
+| 11 | Scenarios, harness, reset, oracle | The YAML test description; fire the tagged HTTP requests; reset the data; check the rules | `src/scenario/`, `src/harness/`, `src/reset/`, `src/oracle/` |
+| 12 | Runner, report, `run` and `replay` | The loop of runs, the timeline, the saved schedule, the two commands | `src/runner/`, `src/report/`, `src/cli/` |
+| 13 | Seven more victims + a shared kit | inventory, seat, wallet, username, transfer, approval, counter, each with a `--fixed` | `victims/` |
+| 14 | Acceptance test | Interleave against all 8 victims, buggy and fixed | `victims/acceptance.e2e.ts` |
+| 15 | Project docs | Spec, architecture, roadmap, decisions, overview, results, testing | `docs/` |
 
 The project was first written in Go and moved to TypeScript (decision D-020): same design, same
 behaviour, same tests. The Go version is kept in git under the tag `go-final`.
 
-What exists: the **test subject** (the buggy app), **proof the bug is real**, the **proxy**, and a
-first **scheduler** that holds each tagged statement and releases them in an order you give it.
-What does not exist yet is the part that *chooses* orders by itself (the explorer), checks rules
-after each run (the oracle) and reports (Phase 2).
+Sections 2-7 below are the foundations (Phases 0-1): the **test subject**, **proof the bug is
+real**, the **proxy**, and a first **scheduler** that releases statements in an order you give it.
+Section 8 is the engine (Phase 2) that *chooses* orders by itself, checks the rules after every
+run, and reports the order that breaks them.
 
 ### 2. The coupon victim app (`victims/coupon/`)
 
@@ -319,6 +325,70 @@ Postgres and the scheduler. Requests A and B are fired at the same moment; only 
 
 The same bug that blasting found only by luck now happens **every time**, on demand.
 
+### 8. The engine: `interleave run` and `interleave replay` (Phase 2)
+
+The kill test needed someone to *know* the bad order. The engine finds it. One **run** is:
+
+1. **Reset** the database (`reset: seed.sql` in the scenario, on a separate admin connection).
+2. **Fire** the scenario's requests at the app at the same moment, tagged `A`, `B`
+   (`src/harness/`).
+3. **Schedule** their statements with `RunScheduler` (`src/sched/run.ts`). Each request is
+   *running* (in app code), *parked* (a statement waits at the red light), *executing* (released,
+   Postgres is working on it), *blocked* (executing for over 200 ms: probably waiting for a row
+   lock the other request holds) or *finished* (its HTTP response arrived). When nothing is
+   running or executing and something is parked, that is a **decision point**: the explorer picks
+   which parked request goes next. A request still in app code is waited for only 50 ms (the
+   **quiet period**; 1 s before its first statement, while its app may still be connecting), so
+   an app that never sends another statement cannot stall the run.
+4. **Judge**: run each invariant (`src/oracle/`). Any answer other than a single `true` is a
+   violation. A Postgres deadlock error (`40P01`) also counts as a finding.
+
+The **explorer** (`src/explore/`) decides what each run tries. `exhaustive` (the default) walks the
+tree of all choices depth-first: run 1 always picks the first runnable request, and each next run
+replays the previous choices up to the deepest point with an untried alternative, then takes it.
+When no alternative is left, *every* order has been checked. `random` picks at random from a seed,
+so `--seed 7` always explores the same orders. The runner (`src/runner/`) loops until a violation
+(or every distinct one, with `--all`), `--max-runs` (default 1000), or the tree is exhausted.
+
+A finding prints as a timeline, one column per request, each statement with what it did, and the
+choices are saved to `.interleave/<scenario>-<run>.json`:
+
+```
+FOUND in run 3: invariant "stock never negative", "one order for the one widget" broke
+
+Request A: POST /order {...}                           Request B: POST /order {...}
+BEGIN
+SELECT stock FROM products WHERE name = 'widget' → 1
+UPDATE products SET stock = stock - 1 WHE… → UPDATE 1
+INSERT INTO orders (product, qty, user_… → INSERT 0 1
+                                                       BEGIN
+                                                       SELECT stock FROM products WHERE name = 'widget' → 1
+COMMIT
+                                                       UPDATE products SET stock = stock - 1 WHE… → UPDATE 1
+                                                       INSERT INTO orders (product, qty, user_… → INSERT 0 1
+                                                       COMMIT
+```
+
+`interleave replay <file>` makes exactly those choices again and must reproduce the violation;
+`--step` waits for Enter before each statement, so you can watch the race in slow motion.
+
+**The eight victims** (`victims/<name>/`, each with a README showing its bad order and why the fix works):
+
+| Victim | Port | The race | The fix (`--fixed`) |
+|---|---|---|---|
+| coupon | 8081 | both read "0 uses" before either writes | `SELECT ... FOR UPDATE` (row lock) |
+| inventory | 8082 | two orders for the last item | check and act in one `UPDATE ... WHERE stock >= qty` |
+| seat | 8083 | two bookings for one seat | lock the seat row before counting bookings |
+| wallet | 8084 | two withdrawals overdraw the balance | `SERIALIZABLE` isolation + retry on error 40001 |
+| username | 8085 | two signups with the same name | advisory lock on the name (no row exists yet to lock) |
+| transfer | 8086 | lost update: balances written from stale reads | lock both rows, always in id order (no deadlock) |
+| approval | 8087 | two managers approve one request | optimistic locking: `UPDATE ... WHERE version = <read>` |
+| counter | 8088 | read, add 1 in the app, write back | `SET n = n + 1` in the database |
+
+They share `victims/common/`: one HTTP endpoint helper (tag check, JSON body, 400/404/405/500) and
+`transaction()`, which tags `BEGIN`/`COMMIT`/`ROLLBACK` and rolls back on every path that does not
+succeed. `npm run test:acceptance` checks all eight, buggy and fixed.
+
 ---
 
 ## Try it yourself
@@ -340,7 +410,7 @@ psql --version        # psql (PostgreSQL) 18.6
 npx tsc --noEmit      # type-check: prints nothing when everything is fine
 npm test
 ```
-Expected: about 140 tests, `ℹ fail 0` (two summaries: the victim tests run separately, one file
+Expected: about 225 tests, `ℹ fail 0` (two summaries: the victim tests run separately, one file
 at a time, because they share the database), in a few seconds. The tests that need Postgres skip
 themselves if it is not running.
 
@@ -485,6 +555,24 @@ npm run test:sched
 This runs the scheduler's tests and the kill test against your Postgres: `✔ KillTest` means the bad
 order double-redeemed in 10 of 10 runs and the serial order never did.
 
+### Step 9: let Interleave find a race by itself
+Two terminals. The app's database is Interleave's own proxy, which `interleave run` starts (the app
+only warns until it is up):
+```bash
+node victims/inventory/main.ts                              # terminal 1
+npm run interleave -- run victims/inventory/scenario.yaml   # terminal 2
+```
+Expected: `FOUND in run 3`, the timeline above, and exit code 1. Then watch it again step by step:
+```bash
+npm run interleave -- replay .interleave/inventory-last-item-3.json --step
+```
+Restart terminal 1 with `--fixed` and run again: `No violation. Complete: all 24 orders checked`, exit
+code 0. Every victim works the same way (`victims/<name>/main.ts`, `victims/<name>/scenario.yaml`).
+To run all of them, buggy and fixed, in one go (about a minute):
+```bash
+npm run test:acceptance
+```
+
 ---
 
 ## Two different kinds of "race": do not mix them up
@@ -534,6 +622,23 @@ This is a likely interview question.
   shutdown and for giving up on a connection that went away.
 - **Backpressure**: when the receiver is slower than the sender, the sender waits instead of
   piling up data in memory.
+- **Decision point**: the moment the scheduler may release a statement: nothing is running or
+  executing, and at least one statement is waiting.
+- **Exhaustive (DFS) exploration**: trying every possible order by walking the tree of choices
+  depth-first, replaying the start of the previous order each time. Also called stateless model
+  checking.
+- **Lost update**: two transactions read a value, both compute a new one, and the second write
+  silently overwrites the first (the counter and transfer victims).
+- **Optimistic vs pessimistic locking**: pessimistic locks the row before working on it
+  (`FOR UPDATE`); optimistic does not lock, but only writes if the row is unchanged (a version
+  column) and fails otherwise.
+- **SERIALIZABLE**: the strictest isolation level. Postgres guarantees the result equals some
+  one-at-a-time order of the transactions, and aborts one with error `40001` when it cannot; the
+  app must retry.
+- **Advisory lock**: a lock on a number the app chooses, with no table behind it; useful when
+  there is no row to lock yet.
+- **Deadlock**: two transactions each wait for a lock the other holds. Postgres detects it and
+  aborts one (`40P01`).
 
 ---
 
@@ -544,23 +649,33 @@ README.md                 this file
 package.json, package-lock.json   the project's npm scripts and its few packages (pg, typescript, types)
 tsconfig.json             TypeScript settings (type-checking only; Node runs the .ts files itself)
 docs/                     SPEC, ARCHITECTURE, ROADMAP, DECISIONS, OVERVIEW, RESULTS, TESTING
-src/cli/                  the interleave command (today: just `interleave proxy`)
+src/cli/                  the interleave command: run, replay, proxy
 src/pgwire/               message framing + startup packets
 src/proxy/                pass-through proxy, request tags, step done
-src/sched/                the scheduler: holds statements, releases them in a given order  ← newest
+src/sched/                the schedulers: run.ts decides at decision points; sched.ts is the fixed-order v1
+src/explore/              which request goes next: exhaustive DFS, seeded random, replay
+src/scenario/             reads and checks scenario.yaml
+src/harness/              fires the tagged HTTP requests
+src/reset/                resets the database before each run
+src/oracle/               checks the invariants after each run
+src/runner/               the loop of runs (Engine), findings, summary
+src/report/               the timeline, the summary, schedule files
 src/bench/                load generator for the proxy overhead measurement
 src/testutil/             small helpers shared by the tests
-victims/coupon/           the buggy coupon app (+ --fixed), seed data, README, exit + kill tests
+victims/coupon/           the buggy coupon app (+ --fixed), seed data, README, exit + kill tests,
+                          interleave run/replay end to end
+victims/<name>/           seven more victims: inventory, seat, wallet, username, transfer, approval, counter
+victims/common/           the kit the victims share (endpoint, transaction, SQL literals, startVictim)
+victims/acceptance.e2e.ts Interleave against all 8 victims, buggy and fixed
 scripts/repeat.ts         runs the concurrent test suites 20 times in a row
 docker-compose.yml        only for other people / the final demo; not used on this machine
 ```
 
 ---
 
-## What comes next (Phase 2)
+## What comes next (Phase 3)
 
-Phase 1 is done: proxy, overhead measured, request tags, step done, scheduler v1, and the kill
-test. Phase 2 (`docs/ROADMAP.md`) builds the engine around the scheduler: request states, a quiet
-period and lock-wait detection (so a statement stuck on a row lock does not stall everything),
-the explorer that tries every order by itself, the invariant checker, scenario files, a runner,
-a terminal report and replay, and seven more victim apps.
+Phase 2 is done: Interleave finds all 8 races and clears all 8 fixes. Phase 3 (`docs/ROADMAP.md`)
+makes it smarter: knowing for sure when a statement waits for a lock (instead of a timeout),
+checking results against every one-at-a-time order (so no hand-written invariant is needed),
+smarter search (PCT, skipping orders that cannot differ), shrinking findings, and faster resets.
