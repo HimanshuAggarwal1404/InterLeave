@@ -14,7 +14,9 @@ import { fileURLToPath } from 'node:url';
 import type pg from 'pg';
 import { newPool } from './common/kit.ts';
 import { startServer, testPool } from './common/testutil.ts';
+import { newHandler as approval } from './approval/app.ts';
 import { newHandler as coupon } from './coupon/app.ts';
+import { newHandler as counter } from './counter/app.ts';
 import { newHandler as inventory } from './inventory/app.ts';
 import { newHandler as seat } from './seat/app.ts';
 import { newHandler as transfer } from './transfer/app.ts';
@@ -34,6 +36,8 @@ const VICTIMS: [name: string, newHandler: NewHandler][] = [
   ['wallet', wallet],
   ['username', username],
   ['transfer', transfer],
+  ['approval', approval],
+  ['counter', counter],
 ];
 
 const OPTIONS = { ...DEFAULT_TIMING, strategy: 'exhaustive' as const, seed: 1, maxRuns: 1000, all: false };
