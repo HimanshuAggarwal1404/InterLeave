@@ -1,0 +1,27 @@
+# Two transfers out of account 1 into account 2 at the same moment (30 and 20).
+# Start the app first: node victims/transfer/main.ts   (add --fixed for the fixed version)
+# then: npm run interleave -- run victims/transfer/scenario.yaml
+name: transfer-lost-update
+app:
+  base_url: http://127.0.0.1:8086
+database:
+  admin_dsn: postgres://interleave:interleave@127.0.0.1:5432/interleave?sslmode=disable
+  reset: seed.sql
+requests:
+  - method: POST
+    path: /transfer
+    body: {from: 1, to: 2, amount: 30}
+  - method: POST
+    path: /transfer
+    body: {from: 1, to: 2, amount: 20}
+invariants:
+  - name: no money created or destroyed
+    sql: SELECT sum(balance) = 200 FROM accounts
+  # A lost update keeps the total right, so also check every balance against
+  # the transfer log: start (100) - money sent + money received.
+  - name: balances match the transfer log
+    sql: |
+      SELECT bool_and(a.balance = 100
+        - (SELECT coalesce(sum(amount), 0) FROM transfers WHERE from_account = a.id)
+        + (SELECT coalesce(sum(amount), 0) FROM transfers WHERE to_account = a.id))
+      FROM accounts a
