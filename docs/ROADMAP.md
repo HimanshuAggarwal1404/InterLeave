@@ -51,7 +51,8 @@ oracle finds all 8 victim races with the invariants removed.
   oracle finds all 8 victim bugs with invariants removed.
 
 ## Phase 4: Real-world apps (weeks 9-10)
-- Extended protocol: schedule a Parse/Bind/Execute/Sync group as one step.
+- Extended protocol: schedule a Parse/Bind/Execute/Sync group as one step. Done 2026-11-12 (D-036):
+  the coupon race is found and its fix cleared through parameterised queries.
 - Victims in another language (e.g. Python with psycopg / SQLAlchemy) and one built on an ORM, to
   prove language independence (the MVP victims are TypeScript + node-postgres).
 - Point Interleave at one open-source app with money/inventory logic, run locally.

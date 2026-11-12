@@ -74,8 +74,10 @@ of the same requests run one at a time in some order (at most 5 requests: n! ord
 - FR-4: Support the simple query protocol (`Q` messages). One `Q` message = one schedulable step.
 - FR-5: Recognise `ReadyForQuery` (`Z`) as "step finished" and read its status byte
   (`I` idle, `T` in transaction, `E` failed transaction).
-- FR-6: Extended query protocol (`Parse/Bind/Execute/Sync`) is passed through unscheduled in the
-  MVP and logged as a warning, so apps do not break.
+- FR-6: Extended query protocol (`Parse/Bind/Execute/Sync`) was passed through unscheduled in the
+  MVP. Since Phase 4 (D-036) a Sync group is one step: it is parked at its first Execute, with the
+  SQL and tag of the statement being executed (remembered from Parse and Bind, so a reused prepared
+  statement works too), and its done is the ReadyForQuery that answers the Sync.
 
 **Request attribution**
 - FR-7: The harness sends each request with header `X-Interleave-Req: A|B|...`. Victim apps prefix

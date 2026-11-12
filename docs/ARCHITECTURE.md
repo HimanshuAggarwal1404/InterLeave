@@ -149,15 +149,21 @@ when the coupon is exhausted), so schedules are not precomputed. Instead:
   `Z` ReadyForQuery (status byte `I`/`T`/`E`), `C` CommandComplete (tag like `UPDATE 1`),
   `E` ErrorResponse, `D` DataRow (for result summaries).
 - Frontend messages we inspect: `Q` Query (string, NUL-terminated), `X` Terminate.
-  `P`/`B`/`E`/`S` (extended protocol) pass through unscheduled in the MVP.
+  Extended protocol (D-036): `P` Parse (statement name -> SQL), `B` Bind (portal -> statement),
+  `E` Execute (where the group is parked), `C` Close (forget a statement/portal), `S` Sync (the
+  group's done slot).
 - Forward unknown messages unchanged. Never re-encode what you can forward byte-for-byte.
 - Reference: PostgreSQL docs, "Frontend/Backend Protocol" chapter (message flow + message formats).
 
 ## 8. Known gotchas (add to this list as they are found)
 
 - `pg` (node-postgres) uses the extended protocol (Parse/Bind/Execute) for any query with a values
-  array (`$1`). Victims send plain text only, or statements bypass the scheduler; a test records
-  the frontend message types on the wire to prove it.
+  array (`$1`). Scheduled since Phase 4 (D-036); the victims still send plain text (their tests record
+  the message types on the wire), and `victims/coupon/extended.test.ts` runs the coupon race with
+  parameters.
+- Parse and Bind are forwarded before the group is parked at its Execute (they do not run the
+  statement). Parking every Execute of a group would deadlock: the second one would wait for a
+  ReadyForQuery that only comes after the Sync behind it.
 - Node may resolve `localhost` to `::1` while a server listens on 127.0.0.1 only. Defaults and
   DSNs use `127.0.0.1` explicitly.
 - Node sockets do not set TCP_NODELAY by default (Go does); the proxy sets it on both sides.

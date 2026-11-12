@@ -622,7 +622,8 @@ This is a likely interview question.
 - **Simple vs extended protocol**: two ways to send SQL to Postgres. Simple sends a whole query
   in one `Q` message, which is easy to hold and release. Extended splits it into several
   messages (Parse/Bind/Execute) and is what node-postgres uses when a query has separate values
-  (`$1`). The MVP only schedules simple-protocol queries, so victim apps send plain text.
+  (`$1`). Since Phase 4 both are scheduled: an extended-protocol group (up to its Sync) is one
+  step, parked at its Execute.
 - **Connection pool**: the app keeps a few database connections open and reuses them, instead
   of connecting per request.
 - **Request tag**: the name (A, B, ...) Interleave gives each HTTP request. The app copies it
@@ -692,6 +693,6 @@ docker-compose.yml        only for other people / the final demo; not used on th
 Phase 3 is done: lock waits detected by asking Postgres, a serial-equivalence oracle, PCT,
 partial-order reduction and a shrinker, each measured in `docs/RESULTS.md` (a template-database
 reset was measured too, and was 85-210x slower for small seeds, so it was not built). Phase 4
-(`docs/ROADMAP.md`) takes Interleave to real apps: scheduling the extended query protocol (what
-ORMs and most drivers use), a victim written in another language and one built on an ORM, and a
-trial on an open-source app.
+(`docs/ROADMAP.md`) takes Interleave to real apps. Done so far: the extended query protocol (what
+ORMs and most drivers use) is scheduled, so parameterised queries are explored like plain ones.
+Next: a victim written in another language, one built on an ORM, and a trial on an open-source app.
