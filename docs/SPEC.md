@@ -20,7 +20,7 @@ violation, and prints a minimal-enough failing timeline that can be replayed det
 ## 3. CLI (MVP)
 
 ```
-interleave run <scenario.yaml> [--strategy exhaustive|random|pct] [--depth 2] [--max-runs 1000] [--seed 1] [--all]
+interleave run <scenario.yaml> [--strategy exhaustive|random|pct] [--depth 2] [--max-runs 1000] [--seed 1] [--all] [--no-shrink]
                 [--out .interleave] [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432]
                 [--quiet 50ms] [--lock-detect pg|timeout] [--lock-poll 10ms] [--lock-wait 200ms]
                 [--run-timeout 10s]
@@ -124,6 +124,9 @@ of the same requests run one at a time in some order (at most 5 requests: n! ord
 **Reporting and replay**
 - FR-20: On violation, print a two-column (or N-column) timeline of statements per request, in
   executed order, with each statement's result summary (rows affected / first value / error).
+- FR-20b (Phase 3, D-033): before a finding is reported, it is shrunk: simpler orders with fewer
+  switches between requests are tried (each really run) and the simplest one that shows the same bug
+  is reported and saved; `--no-shrink` reports the original.
 - FR-21: Write the failing schedule to `.interleave/<scenario>-<run>.json` (scenario path, choices,
   seed, invariant results, timeline).
 - FR-22: `replay` re-runs exactly that schedule and must reproduce the same violation.

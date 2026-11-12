@@ -165,6 +165,33 @@ numbers: the rows above stop after 1-4 runs, so their runs/sec mostly measures t
 - Exhaustive found every race in 3-4 runs: the first orders it tries run A's transaction first,
   which is serial and safe; the race appears as soon as B's first statements move before A's write.
 
+## Shrinker (Phase 3, 2026-11-13)
+
+Every finding is shrunk before it is reported (D-033). Switches between requests in the finding,
+before → after, and in brackets the extra runs the shrinker made. Command `npm run test:acceptance`
+(40/40), tree at 7bb976b; raw numbers in `.interleave/acceptance-results-pg.json`.
+
+| Victim | Exhaustive | Random (seed 1) | PCT (seed 1) | Serial oracle only |
+|---|---|---|---|---|
+| coupon | 3 → 2 (2) | 5 → 2 (2) | 3 → 2 (2) | 3 → 2 (2) |
+| inventory | 3 → 2 (2) | 5 → 2 (2) | 3 → 2 (2) | 3 → 2 (2) |
+| seat | 3 → 2 (3) | 6 → 2 (3) | 2 → 2 (0) | 3 → 2 (3) |
+| wallet | 3 → 2 (2) | 5 → 2 (2) | 3 → 2 (2) | 3 → 2 (2) |
+| username | 3 → 2 (2) | 4 → 2 (2) | 2 → 2 (0) | 3 → 2 (2) |
+| transfer | 3 → 2 (2) | 5 → 2 (2) | 3 → 2 (2) | 3 → 2 (2) |
+| approval | 3 → 2 (2) | 5 → 2 (2) | 3 → 2 (2) | 3 → 2 (2) |
+| counter | 3 → 2 (2) | 5 → 2 (2) | 3 → 2 (2) | 3 → 2 (2) |
+
+Ledger (random seed 1, `victims/ledger/explore.test.ts`): 7 → 2 switches in 13 extra runs.
+
+Notes:
+- 2 switches is the floor with two requests (1 switch = one after the other, not a race), and every
+  finding reached it: the timeline shows exactly "A until the check, all of B, the rest of A".
+- One-preemption orders are tried first (a few runs); a first version that only removed or moved
+  whole segments got stuck at 3 switches on the ledger (a local minimum: getting to 2 needs a
+  segment split, which first adds a switch) and spent ~11 runs per finding.
+- Findings already at the floor cost 0 extra runs.
+
 ## Strategies compared: exhaustive vs random vs PCT (Phase 3, 2026-11-12)
 
 PCT (D-032), on the ledger benchmark victim, whose lost-fee race needs one preemption at exactly

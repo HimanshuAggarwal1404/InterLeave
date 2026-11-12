@@ -183,7 +183,8 @@ when the coupon is exhausted), so schedules are not precomputed. Instead:
   flag concurrent outcomes matching no serial outcome.
 - PCT strategy (random priorities with d change points) and partial-order reduction
   (steps on disjoint tables/rows commute).
-- Delta-debugging shrinker for failing schedules.
+- Done (D-033): shrinker for failing schedules (`src/explore/shrink.ts`): one-preemption orders
+  first, then greedy segment moves.
 - Fast reset: template databases cloned per run, proxy rewrites the `database` startup parameter.
 - Extended protocol scheduling (step = Parse..Sync group), ORM and non-TypeScript victims.
 - Static HTML report, `interleave replay --step` polish, GitHub Action.

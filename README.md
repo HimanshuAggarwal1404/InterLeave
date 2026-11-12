@@ -358,6 +358,9 @@ need one request stopped at exactly the right place while the other runs a long 
 `ledger` benchmark victim; `npm run compare` measures all three strategies on it). The runner (`src/runner/`) loops until a violation
 (or every distinct one, with `--all`), `--max-runs` (default 1000), or the tree is exhausted.
 
+Before a finding is printed it is **shrunk** (Phase 3): Interleave tries simpler orders with fewer
+switches between the requests, runs each, and keeps the simplest that still shows the same bug, so
+the timeline contains only the switches that matter (`--no-shrink` skips this).
 A finding prints as a timeline, one column per request, each statement with what it did, and the
 choices are saved to `.interleave/<scenario>-<run>.json`:
 

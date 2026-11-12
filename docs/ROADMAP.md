@@ -40,7 +40,8 @@ numbers in `RESULTS.md`.
 - PCT strategy; compare runs-to-detection against random and exhaustive. Done 2026-11-12
   (`--strategy pct`, benchmark victim ledger, `npm run compare`; RESULTS.md).
 - Partial-order reduction heuristic (independent steps commute); measure schedules saved.
-- Shrinker (delta debugging) for failing schedules.
+- Shrinker (delta debugging) for failing schedules. Done 2026-11-13: every finding is shrunk to
+  the fewest switches (2 for all victims) in 0-3 extra runs (13 for the ledger); RESULTS.md.
 - Template-database fast reset; measure resets/sec before and after.
 - **Exit test:** RESULTS.md shows before/after numbers for each optimisation, and the serial
   oracle finds all 8 victim bugs with invariants removed.
