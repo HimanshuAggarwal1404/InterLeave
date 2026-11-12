@@ -467,3 +467,22 @@ schedules (clutter); full delta debugging over individual choices (more runs, an
 edits make the app diverge).
 Consequences: a few extra runs per finding; simpler, still replayable timelines. Greedy, so it
 finds a local minimum, not always the global one.
+
+## D-034: Partial-order reduction with sleep sets over table-level read/write sets, opt-in (--por)
+Status: Accepted      Date: 2026-11-12
+Context: Exhaustive search runs orders that differ only in the order of independent statements
+(e.g. an INSERT into one table and a SELECT from another), which cannot change the result. Phase 3
+asks to skip them and measure the orders saved. (Himanshu asked for the recommended options.)
+Decision: sleep sets (Godefroid) in the exhaustive DFS: when backtracking to try request t at a
+decision, every request already explored there whose next statement is independent of t's goes to
+sleep, and stays asleep until a dependent statement runs; a run in which every runnable request is
+asleep would repeat an explored order and is cut short. Independence comes from the SQL text at
+table level (src/explore/access.ts): writes conflict with any access to the same table; BEGIN is
+independent of everything; COMMIT/ROLLBACK conflict with every statement that touches a table;
+FOR UPDATE/SHARE and advisory locks are writes; anything not understood conflicts with everything.
+Opt-in with `--por` for now.
+Alternatives: full dynamic POR (persistent/backtrack sets; more pruning, much more machinery);
+row-level conflicts (would need the database's internals); on by default (a trigger touching another
+table would make the reduction unsound, and an exhaustive "clean" result would silently rely on it).
+Consequences: fewer runs for the same coverage when requests touch different tables; the order
+numbers before/after go into RESULTS.md; unsound only if statements touch tables not named in them.
