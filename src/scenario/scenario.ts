@@ -16,6 +16,10 @@ export type ScenarioRequest = {
 
 export type Invariant = { name: string; sql: string };
 
+// SerialTable is one table of a run's outcome for the serial oracle (D-031):
+// the columns whose values must match a one-at-a-time order.
+export type SerialTable = { table: string; columns: string[] };
+
 export type Scenario = {
   name: string;
   file: string; // absolute path of the scenario file
@@ -24,7 +28,8 @@ export type Scenario = {
   resetFile: string; // absolute path of the reset SQL
   resetSql: string;
   requests: ScenarioRequest[];
-  invariants: Invariant[];
+  invariants: Invariant[]; // may be empty if serial is set
+  serial?: SerialTable[]; // set: the serial oracle checks every run
 };
 
 // ScenarioError is a problem with the scenario file itself (a usage error,
@@ -35,6 +40,11 @@ export class ScenarioError extends Error {
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 const MAX_REQUESTS = 26; // tags A..Z
+const MAX_SERIAL_REQUESTS = 5; // n requests have n! serial orders: 120 at most
+// Table and column names are pasted into the snapshot SQL, so only plain
+// identifiers are allowed (a table may have a schema: public.orders).
+const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const TABLE = /^([A-Za-z_][A-Za-z0-9_]*\.)?[A-Za-z_][A-Za-z0-9_]*$/;
 
 // loadScenario reads, parses and checks the scenario at path. The reset file
 // is read too; its path is relative to the scenario file.
@@ -114,9 +124,11 @@ function checkScenario(doc: unknown, file: string): Scenario {
     return req;
   });
 
-  const rawInvariants = root['invariants'];
-  if (!Array.isArray(rawInvariants) || rawInvariants.length === 0) {
-    fail('invariants: want at least one {name, sql}');
+  const serial = root['serial'] === undefined ? undefined : checkSerial(root['serial'], requests.length, fail);
+
+  const rawInvariants = root['invariants'] ?? [];
+  if (!Array.isArray(rawInvariants) || (rawInvariants.length === 0 && serial === undefined)) {
+    fail('invariants: want at least one {name, sql}, or a serial section (or both)');
   }
   const invariants = (rawInvariants as unknown[]).map((raw, i) => {
     const inv = record(raw) ?? fail(`invariants[${i}]: want a mapping with name and sql`);
@@ -140,7 +152,32 @@ function checkScenario(doc: unknown, file: string): Scenario {
     resetSql: '',
     requests,
     invariants,
+    ...(serial === undefined ? {} : { serial }),
   };
+}
+
+// checkSerial reads the serial section: a mapping of table name to the list
+// of columns that make up a run's outcome (D-031), e.g.
+//   serial:
+//     coupons: [code, uses]
+//     redemptions: [code, user_id]
+function checkSerial(raw: unknown, requests: number, fail: (what: string) => never): SerialTable[] {
+  const tables = record(raw) ?? fail('serial: want a mapping of table name to a list of columns');
+  if (Object.keys(tables).length === 0) {
+    fail('serial: want at least one table');
+  }
+  if (requests > MAX_SERIAL_REQUESTS) {
+    fail(`serial: the serial oracle runs every one-at-a-time order, so it supports at most ${MAX_SERIAL_REQUESTS} requests`);
+  }
+  return Object.entries(tables).map(([table, columns]) => {
+    if (!TABLE.test(table)) {
+      fail(`serial: table ${JSON.stringify(table)}: want a plain table name (letters, digits, _; optionally schema.table)`);
+    }
+    if (!Array.isArray(columns) || columns.length === 0 || !columns.every((c) => typeof c === 'string' && IDENTIFIER.test(c))) {
+      fail(`serial.${table}: want a list of column names (letters, digits, _)`);
+    }
+    return { table, columns: columns as string[] };
+  });
 }
 
 // record returns v as an object of named fields, or undefined if it is not one.

@@ -52,6 +52,27 @@ test('LoadsAValidScenario', async () => {
   assert.deepEqual(s.invariants, [{ name: 'coupon not over-redeemed', sql: "SELECT uses <= max_uses FROM coupons WHERE code = 'DIWALI50'" }]);
 });
 
+// The serial oracle's section (D-031): which columns of which tables make up
+// a run's outcome. With it, invariants are optional.
+const serialOnly = valid.replace(
+  /invariants:[\s\S]*$/,
+  `serial:
+  coupons: [code, uses]
+  public.redemptions: [code, user_id]
+`,
+);
+
+test('LoadsASerialSection', async () => {
+  const s = await withScenario(serialOnly);
+  assert.deepEqual(s.invariants, []);
+  assert.deepEqual(s.serial, [
+    { table: 'coupons', columns: ['code', 'uses'] },
+    { table: 'public.redemptions', columns: ['code', 'user_id'] },
+  ]);
+  const plain = await withScenario(valid);
+  assert.equal(plain.serial, undefined, 'no serial section: the serial oracle is off');
+});
+
 test('RejectsInvalidScenarios', async (t) => {
   // writeSeed false: no seed.sql next to the scenario.
   const cases: Array<[name: string, yaml: string, want: RegExp, writeSeed?: boolean]> = [
@@ -66,6 +87,16 @@ test('RejectsInvalidScenarios', async (t) => {
     ['no invariants', valid.replace(/invariants:[\s\S]*$/, 'invariants: []\n'), /invariants/],
     ['invariant without sql', valid.replace(/    sql: SELECT.*\n/, ''), /sql/],
     ['reset file missing', valid, /reset/, false],
+    ['neither invariants nor serial', valid.replace(/invariants:[\s\S]*$/, ''), /invariants.*serial/],
+    ['serial not a mapping', serialOnly.replace(/serial:[\s\S]*$/, 'serial: [coupons]\n'), /serial/],
+    ['serial table name with SQL in it', serialOnly.replace('coupons: [code, uses]', '"coupons; DROP TABLE x": [code]'), /serial.*table/],
+    ['serial table without columns', serialOnly.replace('coupons: [code, uses]', 'coupons: []'), /serial\.coupons/],
+    ['serial bad column', serialOnly.replace('coupons: [code, uses]', 'coupons: [code, "uses--"]'), /serial\.coupons/],
+    [
+      'serial with too many requests',
+      serialOnly.replace('requests:\n', `requests:\n${'  - {method: POST, path: /redeem}\n'.repeat(4)}`),
+      /serial.*at most 5 requests/,
+    ],
   ];
   for (const [name, yaml, want, writeSeed = true] of cases) {
     await t.test(name, async () => {

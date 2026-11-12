@@ -419,3 +419,19 @@ Alternatives: `pg_stat_activity.wait_event_type = 'Lock'` (does not say who bloc
 blocking late); dropping the timeout (no comparison, no fallback).
 Consequences: one cheap query per 10 ms while a statement runs; exact "blocked" instead of a guess;
 the before/after numbers go into RESULTS.md.
+
+## D-031: Serial-equivalence oracle: listed columns + HTTP statuses, switched on by a `serial:` section
+Status: Accepted      Date: 2026-11-12
+Context: Invariants must be written by hand for every scenario, and a missing one hides a bug.
+The classic definition of a race-free result needs none: a concurrent run is correct only if its
+outcome equals the outcome of the same requests run one at a time, in some order.
+Decision: before exploring, Interleave runs the requests serially in every order (n! orders,
+so at most 5 requests) and records each outcome; after every concurrent run, an outcome matching
+none of them is a finding (`serial`). The outcome is the values of the columns listed per table in
+the scenario's `serial:` section (sorted rows, so row order does not matter) plus each request's
+HTTP status (not the body). A scenario needs invariants, a `serial:` section, or both.
+Alternatives: all columns of listed tables (serial ids and timestamps would cause false findings);
+every table automatically (same, plus unrelated tables); HTTP bodies too (often contain ids or
+times); a CLI flag (the tables must be named somewhere anyway).
+Consequences: no hand-written rule needed to find a race; the user must pick columns that a
+correct app makes deterministic. Costs n! extra runs (2 for two requests) per exploration.
