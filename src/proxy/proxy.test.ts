@@ -508,6 +508,59 @@ test('RealPostgres', async (t) => {
     ]);
   });
 
+  // The extended protocol (D-036): node-postgres with a values array sends
+  // Parse/Bind/Describe/Execute/Sync. Each group is one step: onQuery once,
+  // at the Execute, with the statement's SQL and tag; done at its
+  // ReadyForQuery, with the result. A reused named statement (no new Parse)
+  // is still recognised.
+  await t.test('extended protocol (node-postgres)', async () => {
+    const seen: string[] = [];
+    const results: StepResult[] = [];
+    let hold: Promise<void> | undefined;
+    const p = new PgProxy(upstream);
+    p.onQuery = async (_signal, tag, sql) => {
+      if (tag === '') {
+        return undefined;
+      }
+      seen.push(`${tag} ${sql}`);
+      await hold;
+      return (_status, result) => results.push(result);
+    };
+    const viaHook = await serveProxy(t, p);
+    const client = new pg.Client({ connectionString: `postgres://interleave:interleave@${viaHook}/interleave?sslmode=disable` });
+    await client.connect();
+    try {
+      const one = await client.query<{ n: number }>('/* il:req=A */ SELECT $1::int + 1 AS n', [41]);
+      assert.equal(one.rows[0].n, 42);
+      for (const v of [1, 2]) {
+        await client.query({ name: 'add', text: '/* il:req=B */ SELECT $1::int + 10 AS n', values: [v] });
+      }
+      // Parked: the query must not finish while the hook holds it.
+      let release: () => void = () => {};
+      hold = new Promise((r) => (release = r));
+      let finished = false;
+      const parked = client.query('/* il:req=C */ SELECT $1::text AS s', ['x']).then(() => (finished = true));
+      await new Promise((r) => setTimeout(r, 150));
+      assert.equal(finished, false, 'the Execute was not parked');
+      release();
+      await parked;
+    } finally {
+      await client.end();
+    }
+    assert.deepEqual(seen, [
+      'A /* il:req=A */ SELECT $1::int + 1 AS n',
+      'B /* il:req=B */ SELECT $1::int + 10 AS n',
+      'B /* il:req=B */ SELECT $1::int + 10 AS n',
+      'C /* il:req=C */ SELECT $1::text AS s',
+    ]);
+    assert.deepEqual(results, [
+      { command: 'SELECT 1', firstValue: '42' },
+      { command: 'SELECT 1', firstValue: '11' },
+      { command: 'SELECT 1', firstValue: '12' },
+      { command: 'SELECT 1', firstValue: 'x' },
+    ]);
+  });
+
   // The backend PID from BackendKeyData reaches onQuery: it is the PID that
   // Postgres itself reports for the connection (lock-wait detection, D-030).
   await t.test('backend PID (node-postgres)', async () => {

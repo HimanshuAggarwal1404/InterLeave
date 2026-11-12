@@ -7,7 +7,11 @@ import {
   CANCEL_REQUEST_CODE,
   GSSENC_REQUEST_CODE,
   backendKeyData,
+  bindPortal,
+  closeTarget,
   commandTag,
+  executePortal,
+  parseStatement,
   errorFields,
   firstColumn,
   type ErrorInfo,
@@ -233,7 +237,8 @@ export class PgProxy {
         // Postgres sends BackendKeyData once, during startup, before the
         // ReadyForQuery that lets the app send its first query.
         const backend: { pid?: number } = {};
-        toServer.inspect = (m) => inspectQuery(onQuery, conn.signal, addr, m, pending, backend.pid);
+        const ext = newExtended();
+        toServer.inspect = (m) => inspectQuery(onQuery, conn.signal, addr, m, pending, backend.pid, ext);
         toClient.observe = (m) => {
           if (m.type === 'K') {
             recordBackend(addr, m, backend);
@@ -291,9 +296,27 @@ async function readStartup(client: net.Socket, r: WireReader): Promise<Startup |
   }
 }
 
-// inspectQuery reports a Query message to onQuery and queues the done it
-// returns. Anything wrong with the message is logged, not fatal: it is
-// forwarded anyway and Postgres judges it.
+// Extended is one connection's extended-protocol state (D-036): which SQL
+// each prepared statement and portal holds, and the current Sync group.
+type Extended = {
+  statements: Map<string, string>; // statement name ('' = unnamed) -> SQL, from Parse
+  portals: Map<string, string>; // portal name -> SQL, from Bind
+  executed: boolean; // the current group already had its scheduled Execute
+  done: DoneFn | undefined; // that Execute's done, queued at the group's Sync
+};
+
+function newExtended(): Extended {
+  return { statements: new Map(), portals: new Map(), executed: false, done: undefined };
+}
+
+// inspectQuery looks at every message the app sends, before it is forwarded.
+// A simple Query is one step: onQuery is asked, and its done queued for the
+// Query's ReadyForQuery. In the extended protocol a Sync group is one step:
+// Parse/Bind/Close only update which SQL a statement or portal holds; the
+// group's first Execute asks onQuery (that is where the statement runs), and
+// its done is queued at the Sync, whose ReadyForQuery ends the group. Anything
+// wrong with a message is logged, not fatal: it is forwarded anyway and
+// Postgres judges it.
 async function inspectQuery(
   onQuery: OnQuery,
   signal: AbortSignal,
@@ -301,44 +324,95 @@ async function inspectQuery(
   m: Message,
   pending: Array<DoneFn | undefined>,
   pid: number | undefined,
+  ext: Extended,
 ): Promise<void> {
-  if (m.type === 'S' || m.type === 'F') {
-    // A Sync (extended protocol) or FunctionCall also gets exactly one
-    // ReadyForQuery. It is not scheduled (FR-6), but it takes a slot, or its
-    // ReadyForQuery would be credited to the next Query.
-    pending.push(undefined);
-    return;
-  }
-  if (m.type !== 'Q') {
-    return;
-  }
-  let done: DoneFn | undefined;
-  let sql: string | undefined;
-  try {
-    sql = queryString(m);
-  } catch (err) {
-    log(`proxy: ${addr}: ${errorMessage(err)}`);
-  }
-  if (sql !== undefined) {
-    let tag = '';
-    try {
-      tag = requestTag(sql);
-    } catch (err) {
-      log(`proxy: ${addr}: ${errorMessage(err)} (treated as untagged)`);
-    }
-    try {
-      done = await onQuery(signal, tag, sql, pid);
-    } catch (err) {
-      if (signal.aborted) {
-        throw err; // the connection is going away; forward stops here
+  switch (m.type) {
+    case 'Q': {
+      let sql: string | undefined;
+      try {
+        sql = queryString(m);
+      } catch (err) {
+        log(`proxy: ${addr}: ${errorMessage(err)}`);
       }
-      log(`proxy: ${addr}: onQuery failed: ${errorMessage(err)} (query forwarded unscheduled)`);
+      // Queue even an undefined done: this Query still gets a ReadyForQuery,
+      // and skipping it would pair every later reply with the wrong query.
+      // This runs before the Query is forwarded, so its reply cannot come
+      // back first.
+      pending.push(sql === undefined ? undefined : await askHook(onQuery, signal, addr, sql, pid));
+      return;
     }
+    case 'P':
+    case 'B':
+    case 'C':
+      try {
+        if (m.type === 'P') {
+          const { name, query } = parseStatement(m);
+          ext.statements.set(name, query);
+        } else if (m.type === 'B') {
+          const { portal, statement } = bindPortal(m);
+          const sql = ext.statements.get(statement);
+          if (sql === undefined) {
+            ext.portals.delete(portal);
+          } else {
+            ext.portals.set(portal, sql);
+          }
+        } else {
+          const { kind, name } = closeTarget(m);
+          (kind === 'S' ? ext.statements : ext.portals).delete(name);
+        }
+      } catch (err) {
+        log(`proxy: ${addr}: ${errorMessage(err)}`);
+      }
+      return;
+    case 'E': {
+      if (ext.executed) {
+        return; // one step per Sync group: later Executes pass through
+      }
+      ext.executed = true;
+      let sql: string | undefined;
+      try {
+        sql = ext.portals.get(executePortal(m).portal);
+      } catch (err) {
+        log(`proxy: ${addr}: ${errorMessage(err)}`);
+      }
+      if (sql !== undefined) {
+        ext.done = await askHook(onQuery, signal, addr, sql, pid);
+      }
+      return;
+    }
+    case 'S':
+      // A Sync gets exactly one ReadyForQuery: the end of the group.
+      pending.push(ext.done);
+      ext.done = undefined;
+      ext.executed = false;
+      return;
+    case 'F':
+      // A FunctionCall also gets one ReadyForQuery. It is not scheduled, but
+      // it takes a slot, or its ReadyForQuery would be credited to the next step.
+      pending.push(undefined);
+      return;
   }
-  // Queue even an undefined done: this Query still gets a ReadyForQuery, and
-  // skipping it would pair every later reply with the wrong query. This runs
-  // before the Query is forwarded, so its reply cannot come back first.
-  pending.push(done);
+}
+
+// askHook asks onQuery about one statement and returns its done. A failing
+// hook is logged and the statement forwarded unscheduled, unless the
+// connection is going away.
+async function askHook(onQuery: OnQuery, signal: AbortSignal, addr: string, sql: string, pid: number | undefined): Promise<DoneFn | undefined> {
+  let tag = '';
+  try {
+    tag = requestTag(sql);
+  } catch (err) {
+    log(`proxy: ${addr}: ${errorMessage(err)} (treated as untagged)`);
+  }
+  try {
+    return await onQuery(signal, tag, sql, pid);
+  } catch (err) {
+    if (signal.aborted) {
+      throw err; // the connection is going away; forward stops here
+    }
+    log(`proxy: ${addr}: onQuery failed: ${errorMessage(err)} (query forwarded unscheduled)`);
+    return undefined;
+  }
 }
 
 // recordBackend keeps the connection's backend PID from BackendKeyData. A
