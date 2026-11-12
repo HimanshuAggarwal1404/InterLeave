@@ -5,8 +5,9 @@
 //              statement finished, until it sends the next or finishes)
 //   parked     its next statement is held, waiting for a decision
 //   executing  its statement was released and Postgres is working on it
-//   blocked    executing for longer than the lock-wait timeout: probably
-//              waiting for a row lock held by another request
+//   blocked    waiting for a lock held by another request: Postgres says so
+//              (probeBlocked, D-030), or, without a probe, it has been
+//              executing for longer than the lock-wait timeout
 //   finished   its HTTP response has arrived
 //
 // A decision point is reached when no request is executing, no request is
@@ -49,7 +50,8 @@ export type ExecutedStep = {
   sql: string;
   status?: ReadyStatus;
   result?: StepResult;
-  blocked: boolean; // it was still executing when the lock-wait timeout fired
+  blocked: boolean; // it waited for a lock (probe) or outlived the lock-wait timeout
+  blockedBy?: string[]; // the requests holding that lock, if the probe named them
 };
 
 // Decision is one choice: what was runnable, and what was released.
@@ -72,13 +74,21 @@ export type RunSchedulerOptions = {
   choose: Chooser;
   quietMs?: number; // default 50: how long a running request may delay a decision
   startGraceMs?: number; // default 1000: the same for a request's first statement, from the run's start
-  lockWaitMs?: number; // default 200: when an executing statement counts as blocked
+  lockWaitMs?: number; // default 200: when an executing statement counts as blocked (no probe)
+  // probeBlocked, if set, asks Postgres which backend PIDs block the given
+  // one ([] = not blocked): `SELECT pg_blocking_pids(pid)`. It is polled every
+  // lockPollMs while a statement executes, instead of guessing with
+  // lockWaitMs. Statements without a PID, or a probe that fails, fall back
+  // to lockWaitMs.
+  probeBlocked?: (pid: number) => Promise<number[]>;
+  lockPollMs?: number; // default 10
   // beforeRelease, if set, is awaited before each release (replay --step).
   beforeRelease?: (step: { tag: string; sql: string }) => Promise<void>;
 };
 
 type Parked = {
   sql: string;
+  pid: number | undefined; // the backend PID of the statement's connection
   release: (done: RunDoneFn | undefined) => void; // settles the statement's onQuery Promise
   unlisten: () => void; // removes its abort listener
 };
@@ -87,7 +97,8 @@ type Request = {
   state: RequestState;
   sentFirst: boolean; // it has parked a statement in this run
   parked?: Parked;
-  lockTimer?: NodeJS.Timeout;
+  pid?: number; // backend PID of its latest statement: maps blocking PIDs to requests
+  lockTimer?: NodeJS.Timeout; // lock-wait timeout, or the next probe
 };
 
 export class RunScheduler {
@@ -96,6 +107,8 @@ export class RunScheduler {
   readonly #choose: Chooser;
   readonly #quietMs: number;
   readonly #lockWaitMs: number;
+  readonly #probeBlocked: RunSchedulerOptions['probeBlocked'];
+  readonly #lockPollMs: number;
   readonly #startGraceMs: number;
   readonly #beforeRelease: RunSchedulerOptions['beforeRelease'];
   #steps: ExecutedStep[] = [];
@@ -118,6 +131,8 @@ export class RunScheduler {
     this.#choose = options.choose;
     this.#quietMs = options.quietMs ?? 50;
     this.#lockWaitMs = options.lockWaitMs ?? 200;
+    this.#probeBlocked = options.probeBlocked;
+    this.#lockPollMs = options.lockPollMs ?? 10;
     this.#startGraceMs = options.startGraceMs ?? 1000;
     this.#beforeRelease = options.beforeRelease;
   }
@@ -126,13 +141,13 @@ export class RunScheduler {
   // that is running (in app code) is parked; anything else passes through at
   // once: untagged statements, unknown tags, a second statement while the
   // request already has one parked or executing, and everything after the run.
-  onQuery(signal: AbortSignal, tag: string, sql: string): Promise<RunDoneFn | undefined> {
+  onQuery(signal: AbortSignal, tag: string, sql: string, pid?: number): Promise<RunDoneFn | undefined> {
     const r = this.#requests.get(tag);
     if (r === undefined || r.state !== 'running' || this.#ended || signal.aborted) {
       return Promise.resolve(undefined);
     }
     return new Promise<RunDoneFn | undefined>((resolve) => {
-      const step: Parked = { sql, release: resolve, unlisten: () => {} };
+      const step: Parked = { sql, pid, release: resolve, unlisten: () => {} };
       const onAbort = () => {
         // The statement's connection went away while it was parked.
         if (r.parked === step) {
@@ -147,6 +162,11 @@ export class RunScheduler {
       r.parked = step;
       r.state = 'parked';
       r.sentFirst = true;
+      if (pid !== undefined) {
+        // Known as soon as it parks: a parked request in an open transaction
+        // is exactly the kind that holds the lock another one waits for.
+        r.pid = pid;
+      }
       this.#changed();
     });
   }
@@ -276,25 +296,75 @@ export class RunScheduler {
     );
   }
 
-  // #release lets a parked statement go to Postgres and starts its
-  // lock-wait timer.
+  // #release lets a parked statement go to Postgres and starts watching
+  // whether it waits for a lock.
   #release(tag: string, r: Request, step: Parked): void {
     r.parked = undefined;
     step.unlisten();
     r.state = 'executing';
     const executed: ExecutedStep = { tag, sql: step.sql, blocked: false };
     this.#steps.push(executed);
+    if (this.#probeBlocked !== undefined && step.pid !== undefined) {
+      this.#pollLock(r, executed, step.pid, this.#probeBlocked);
+    } else {
+      this.#startLockTimeout(r, executed);
+    }
+    step.release(this.#doneFor(r, executed));
+  }
+
+  // #startLockTimeout: no reply within the lock-wait timeout most likely means
+  // the statement waits for a row lock that another, parked request holds.
+  // Then let the others go on (D-007).
+  #startLockTimeout(r: Request, executed: ExecutedStep): void {
     r.lockTimer = setTimeout(() => {
       r.lockTimer = undefined;
       if (r.state === 'executing') {
-        // No reply within the lock-wait timeout: most likely waiting for a
-        // row lock that another, parked request holds. Let others go on.
-        r.state = 'blocked';
-        executed.blocked = true;
-        this.#changed();
+        this.#markBlocked(r, executed);
       }
     }, this.#lockWaitMs);
-    step.release(this.#doneFor(r, executed));
+  }
+
+  // #pollLock asks Postgres every lockPollMs whether the statement waits for
+  // a lock (D-030). One probe at a time: the next is scheduled only after the
+  // previous answered. It stops when the statement finishes or is blocked;
+  // an answer that arrives after that is ignored.
+  #pollLock(r: Request, executed: ExecutedStep, pid: number, probe: (pid: number) => Promise<number[]>): void {
+    const stillWaiting = () => !this.#ended && r.state === 'executing' && this.#steps.at(-1) === executed;
+    r.lockTimer = setTimeout(() => {
+      r.lockTimer = undefined;
+      if (!stillWaiting()) {
+        return;
+      }
+      probe(pid).then(
+        (blockers) => {
+          if (!stillWaiting()) {
+            return;
+          }
+          if (blockers.length > 0) {
+            executed.blockedBy = this.#order.filter((tag) => {
+              const other = this.#requests.get(tag);
+              return other !== r && other?.pid !== undefined && blockers.includes(other.pid);
+            });
+            this.#markBlocked(r, executed);
+          } else {
+            this.#pollLock(r, executed, pid, probe);
+          }
+        },
+        () => {
+          // The probe itself failed (e.g. the admin connection broke): fall
+          // back to the timeout for this statement.
+          if (stillWaiting()) {
+            this.#startLockTimeout(r, executed);
+          }
+        },
+      );
+    }, this.#lockPollMs);
+  }
+
+  #markBlocked(r: Request, executed: ExecutedStep): void {
+    r.state = 'blocked';
+    executed.blocked = true;
+    this.#changed();
   }
 
   // #doneFor returns the done function for a released statement. Only its

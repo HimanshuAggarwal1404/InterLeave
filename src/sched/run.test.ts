@@ -202,6 +202,79 @@ test('LockWaitMarksBlockedAndContinues', async (t) => {
   );
 });
 
+// Lock-wait detection by asking Postgres (D-030). The probe stands in for
+// `SELECT pg_blocking_pids(pid)`: it gets the PID of the statement's
+// connection and answers with the PIDs blocking it ([] = not blocked).
+const PIDS: Record<string, number> = { A: 101, B: 102 };
+
+test('ProbeMarksBlockedAtOnce', async (t) => {
+  const signal = testSignal(t);
+  // A waits for a lock that B holds (B's PID blocks A's). The lock-wait
+  // timeout is huge, so only the probe can let B go.
+  const s = scheduler(['A', 'B'], { lockPollMs: 5, probeBlocked: async (pid) => (pid === PIDS.A ? [PIDS.B] : []) });
+  const run = s.run(signal);
+  const a = s.onQuery(signal, 'A', 'a1', PIDS.A);
+  const b = s.onQuery(signal, 'B', 'b1', PIDS.B);
+  const doneA = await receive(a, 'A was never released');
+  const doneB = await receive(b, 'B was not released although the probe said A is blocked');
+  doneB?.('T', {});
+  s.requestFinished('B');
+  doneA?.('T', {});
+  s.requestFinished('A');
+  const trace = await receive(run, 'run did not finish');
+  assert.deepEqual(
+    trace.steps.map((st) => `${st.tag} blocked=${st.blocked} by=${(st.blockedBy ?? []).join(',')}`),
+    ['A blocked=true by=B', 'B blocked=false by='],
+  );
+});
+
+test('ProbeSaysNotBlockedKeepsWaiting', async (t) => {
+  const signal = testSignal(t);
+  // A is slow but not blocked: the probe keeps saying so, so B must wait for
+  // A even after the (short) lock-wait timeout: the probe replaces the guess.
+  let probes = 0;
+  const s = scheduler(['A', 'B'], { lockWaitMs: 20, lockPollMs: 5, probeBlocked: async (pid) => (pid === PIDS.A && probes++, []) });
+  s.run(signal);
+  const a = s.onQuery(signal, 'A', 'a1', PIDS.A);
+  const b = s.onQuery(signal, 'B', 'b1', PIDS.B);
+  const doneA = await receive(a, 'A was never released');
+  await notWithin(b, 'B was released although the probe said A is not blocked');
+  assert.ok(probes >= 2, `the probe must be polled while A executes (asked ${probes} times)`);
+  doneA?.('T', {});
+  // Polling stops once A's reply is in.
+  const after = probes;
+  s.requestFinished('A');
+  await receive(b, 'B was not released after A finished');
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(probes <= after + 1, `A's PID was still probed after its statement finished (${probes - after} more)`);
+});
+
+test('ProbeFallsBackToTimeout', async (t) => {
+  const signal = testSignal(t);
+  for (const [name, pid, probe] of [
+    ['the statement has no PID', undefined, async () => [PIDS.B]],
+    ['the probe fails', PIDS.A, async () => Promise.reject(new Error('admin connection lost'))],
+  ] as const) {
+    await t.test(name, async () => {
+      const s = scheduler(['A', 'B'], { lockWaitMs: 50, lockPollMs: 5, probeBlocked: probe });
+      const run = s.run(signal);
+      const a = s.onQuery(signal, 'A', 'a1', pid);
+      const b = s.onQuery(signal, 'B', 'b1', PIDS.B);
+      const doneA = await receive(a, 'A was never released');
+      const doneB = await receive(b, 'B was not released after the lock-wait timeout');
+      doneB?.('T', {});
+      s.requestFinished('B');
+      doneA?.('T', {});
+      s.requestFinished('A');
+      const trace = await receive(run, 'run did not finish');
+      assert.deepEqual(
+        trace.steps.map((st) => `${st.tag} blocked=${st.blocked}`),
+        ['A blocked=true', 'B blocked=false'],
+      );
+    });
+  }
+});
+
 test('UnscheduledQueriesPassThrough', async (t) => {
   const signal = testSignal(t);
   const s = scheduler(['A']);
