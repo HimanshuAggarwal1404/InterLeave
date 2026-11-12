@@ -1,0 +1,32 @@
+# A deposit and the month-end close on the same account at the same moment.
+# A benchmark for comparing strategies (D-032): the bad order needs one
+# preemption at exactly the right place and then all of the close.
+# Start the app first: node victims/ledger/main.ts   (add --fixed for the fixed version)
+# then: npm run interleave -- run victims/ledger/scenario.yaml --strategy pct
+name: ledger-lost-fee
+app:
+  base_url: http://127.0.0.1:8089
+database:
+  admin_dsn: postgres://interleave:interleave@127.0.0.1:5432/interleave?sslmode=disable
+  reset: seed.sql
+requests:
+  - method: POST
+    path: /deposit
+    body: {account: 1, amount: 50}
+  - method: POST
+    path: /close
+    body: {account: 1, fee: 10}
+invariants:
+  - name: balance matches deposits and fees
+    sql: |
+      SELECT a.balance = 100
+        + (SELECT coalesce(sum(amount), 0) FROM ledger_entries WHERE account = 1 AND kind = 'deposit')
+        - (SELECT coalesce(sum(amount), 0) FROM ledger_entries WHERE account = 1 AND kind = 'fee')
+      FROM ledger_accounts a WHERE a.id = 1
+# The serial oracle (D-031): a run's outcome (these columns, plus each request's
+# HTTP status) must equal what some one-at-a-time order gives. Serial ids are
+# left out: a correct run may hand them out in another order.
+serial:
+  ledger_accounts: [id, balance]
+  ledger_entries: [account, kind, amount]
+  ledger_audit: [account, line]

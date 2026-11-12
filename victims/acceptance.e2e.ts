@@ -2,7 +2,7 @@
 //   - exhaustive finds the race (an invariant violation) and the finding
 //     replays identically three times;
 //   - the fixed app is clean in every order, and every order was checked;
-//   - random with seed 1 finds the race too;
+//   - random with seed 1, and PCT with seed 1 and depth 2, find the race too;
 //   - with the invariants removed, the serial oracle alone finds it (Phase 3 exit, D-031).
 // It also records how fast each was (written to .interleave/acceptance-results-<mode>.json
 // for docs/RESULTS.md). INTERLEAVE_LOCK_DETECT=timeout runs it with the old
@@ -132,6 +132,16 @@ for (const [name, newHandler] of VICTIMS) {
     assert.equal(summary.error, undefined, summary.error);
     assert.equal(summary.findings.length, 1, `random found nothing in ${summary.runs} runs`);
     record(name, 'random', summary);
+    t.diagnostic(`found after ${summary.runs} runs`);
+  });
+
+  test(`${name}: PCT (seed 1, depth 2) finds the race`, async (t) => {
+    const s = await setup(t, name, newHandler, false);
+    if (!s) return;
+    const summary = await s.engine.explore(s.scenario, { ...OPTIONS, strategy: 'pct', depth: 2, maxRuns: 200 });
+    assert.equal(summary.error, undefined, summary.error);
+    assert.equal(summary.findings.length, 1, `PCT found nothing in ${summary.runs} runs`);
+    record(name, 'pct', summary);
     t.diagnostic(`found after ${summary.runs} runs`);
   });
 
