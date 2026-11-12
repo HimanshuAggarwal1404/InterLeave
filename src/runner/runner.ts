@@ -6,7 +6,7 @@ import { PgProxy, splitHostPort } from '../proxy/index.ts';
 import { fireRequests } from '../harness/index.ts';
 import { SerialOracle, checkInvariants, serialOrders, snapshot, type Outcome } from '../oracle/index.ts';
 import { AdminDb } from '../reset/index.ts';
-import { Exhaustive, RandomStrategy, replayChooser } from '../explore/index.ts';
+import { Exhaustive, PctStrategy, RandomStrategy, replayChooser } from '../explore/index.ts';
 import { RunScheduler, type Chooser } from '../sched/run.ts';
 import type { Scenario } from '../scenario/index.ts';
 import type { ExploreSummary, FindingKind, RunResult, Strategy } from './types.ts';
@@ -30,6 +30,7 @@ export const DEFAULT_TIMING: TimingOptions = { quietMs: 50, lockWaitMs: 200, run
 export type ExploreOptions = TimingOptions & {
   strategy: Strategy;
   seed: number;
+  depth?: number; // pct: the number of preemptions it aims for, minus one change point each (default 2)
   maxRuns: number;
   all: boolean; // keep going after a finding and report every distinct one (FR-16)
   signal?: AbortSignal; // Ctrl+C: stop after the current run
@@ -90,6 +91,7 @@ export class Engine {
       scenarioName: scenario.name,
       scenarioFile: scenario.file,
       strategy: opts.strategy,
+      ...(opts.strategy === 'pct' ? { depth: opts.depth ?? 2 } : {}),
       seed: opts.seed,
       maxRuns: opts.maxRuns,
       runs: 0,
@@ -101,7 +103,8 @@ export class Engine {
     };
     const started = performance.now();
     const exhaustive = opts.strategy === 'exhaustive' ? new Exhaustive() : undefined;
-    const random = opts.strategy === 'random' ? new RandomStrategy(opts.seed) : undefined;
+    const random =
+      opts.strategy === 'random' ? new RandomStrategy(opts.seed) : opts.strategy === 'pct' ? new PctStrategy(opts.seed, opts.depth ?? 2) : undefined;
     const seen = new Set<string>(); // finding signatures already reported
     const admin = await AdminDb.connect(scenario.adminDsn);
     try {
@@ -128,6 +131,9 @@ export class Engine {
         summary.runs++;
         summary.resetSeconds += result.resetMs / 1000;
         exhaustive?.record(result.trace.decisions);
+        if (random instanceof PctStrategy) {
+          random.record(result.trace.decisions);
+        }
         opts.onRun?.(result);
         if (result.outcome === 'error') {
           summary.error = result.error;

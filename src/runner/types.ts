@@ -33,7 +33,7 @@ export type RunResult = {
   ms: number;
 };
 
-export type Strategy = 'exhaustive' | 'random';
+export type Strategy = 'exhaustive' | 'random' | 'pct';
 
 // ExploreSummary is the result of `interleave run`.
 export type ExploreSummary = {
@@ -41,6 +41,7 @@ export type ExploreSummary = {
   scenarioFile: string;
   strategy: Strategy;
   seed: number;
+  depth?: number; // pct only: the bug depth it targets (D-032)
   maxRuns: number;
   runs: number; // runs executed
   complete: boolean; // exhaustive only: every order was explored

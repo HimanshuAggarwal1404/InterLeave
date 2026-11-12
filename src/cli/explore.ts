@@ -9,7 +9,7 @@ import { errorMessage } from '../log.ts';
 import { EXIT_FOUND, EXIT_INTERNAL, EXIT_OK, EXIT_USAGE } from './exit.ts';
 import { lineReader } from './lines.ts';
 
-export const runUsage = `  interleave run <scenario.yaml> [--strategy exhaustive|random] [--max-runs 1000] [--seed 1]
+export const runUsage = `  interleave run <scenario.yaml> [--strategy exhaustive|random|pct] [--depth 2] [--max-runs 1000] [--seed 1]
                  [--all] [--out .interleave] [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432]
                  [--lock-detect pg|timeout] [--lock-poll 10ms] [--lock-wait 200ms]
                  [--quiet 50ms] [--run-timeout 10s]
@@ -54,6 +54,7 @@ export async function runExplore(args: string[], signal?: AbortSignal): Promise<
       options: {
         ...commonOptions,
         strategy: { type: 'string', default: 'exhaustive' },
+        depth: { type: 'string', default: '2' },
         'max-runs': { type: 'string', default: '1000' },
         seed: { type: 'string', default: '1' },
         all: { type: 'boolean', default: false },
@@ -70,8 +71,12 @@ export async function runExplore(args: string[], signal?: AbortSignal): Promise<
   const strategy = values.strategy as Strategy;
   const maxRuns = Number(values['max-runs']);
   const seed = Number(values.seed);
-  if (strategy !== 'exhaustive' && strategy !== 'random') {
-    return usageError('--strategy must be exhaustive or random');
+  const depth = Number(values.depth);
+  if (strategy !== 'exhaustive' && strategy !== 'random' && strategy !== 'pct') {
+    return usageError('--strategy must be exhaustive, random or pct');
+  }
+  if (!Number.isInteger(depth) || depth < 1) {
+    return usageError('--depth must be an integer >= 1 (pct: 1 + the number of preemptions)');
   }
   if (!Number.isInteger(maxRuns) || maxRuns < 1 || !Number.isInteger(seed)) {
     return usageError('--max-runs must be an integer >= 1 and --seed an integer');
@@ -93,7 +98,7 @@ export async function runExplore(args: string[], signal?: AbortSignal): Promise<
   process.once('SIGINT', onStop);
   signal?.addEventListener('abort', onStop, { once: true });
   try {
-    console.log(`interleave: ${scenario.name}: ${scenario.requests.length} requests, strategy ${strategy}${strategy === 'random' ? ` (seed ${seed})` : ''}, up to ${maxRuns} runs`);
+    console.log(`interleave: ${scenario.name}: ${scenario.requests.length} requests, strategy ${strategy}${strategy === 'random' ? ` (seed ${seed})` : strategy === 'pct' ? ` (seed ${seed}, depth ${depth})` : ''}, up to ${maxRuns} runs`);
     console.log(`  app ${scenario.baseUrl} must use the database at ${engine.proxyAddress}`);
     let summary;
     try {
@@ -101,6 +106,7 @@ export async function runExplore(args: string[], signal?: AbortSignal): Promise<
         ...times,
         strategy,
         seed,
+        depth,
         maxRuns,
         all: values.all,
         signal: stop.signal,

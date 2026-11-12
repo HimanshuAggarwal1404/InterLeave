@@ -93,4 +93,7 @@ test('UsageErrorsExit2', async () => {
   const badDetect = await interleave(['run', 'victims/coupon/scenario.yaml', '--lock-detect', 'guess']);
   assert.equal(badDetect.code, 2);
   assert.match(badDetect.err, /--lock-detect must be pg or timeout/);
+  const badDepth = await interleave(['run', 'victims/coupon/scenario.yaml', '--strategy', 'pct', '--depth', '0']);
+  assert.equal(badDepth.code, 2);
+  assert.match(badDepth.err, /--depth/);
 });

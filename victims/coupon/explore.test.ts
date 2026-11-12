@@ -128,6 +128,15 @@ test('SerialOracleNeedsNoInvariants', async (t) => {
   }
 });
 
+test('PctFindsItToo', async (t) => {
+  const s = await setup(t, false);
+  if (!s) return;
+  const summary = await s.engine.explore(s.scenario, { ...options, strategy: 'pct', seed: 1, depth: 2, maxRuns: 200 });
+  assert.equal(summary.error, undefined, summary.error);
+  assert.equal(summary.findings.length, 1, `PCT (seed 1, depth 2) found nothing in ${summary.runs} runs`);
+  t.diagnostic(`pct seed 1 depth 2: found after ${summary.runs} runs`);
+});
+
 test('RandomFindsItToo', async (t) => {
   const s = await setup(t, false);
   if (!s) return;

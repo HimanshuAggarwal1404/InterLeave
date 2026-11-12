@@ -115,7 +115,8 @@ export function formatSummary(s: ExploreSummary): string {
   } else if (s.strategy === 'exhaustive') {
     lines.push(`No violation in ${s.runs} orders, but stopped at --max-runs ${s.maxRuns}: more orders remain.`);
   } else {
-    lines.push(`No violation in ${s.runs} random orders (seed ${s.seed}); random search never proves an app clean.`);
+    const how = s.strategy === 'pct' ? `PCT orders (seed ${s.seed}, depth ${s.depth ?? 2})` : `random orders (seed ${s.seed})`;
+    lines.push(`No violation in ${s.runs} ${how}; random search never proves an app clean.`);
   }
   let stats = `${s.runs} runs in ${s.seconds.toFixed(2)}s (${rate(s.runs, s.seconds)} runs/s, resets ${rate(s.runs, s.resetSeconds)}/s)`;
   if (s.firstFindingAfterRuns !== undefined && s.firstFindingAfterSeconds !== undefined) {
