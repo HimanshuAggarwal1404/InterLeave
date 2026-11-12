@@ -20,3 +20,9 @@ invariants:                  # each must return a single true
     sql: SELECT uses <= max_uses FROM coupons WHERE code = 'DIWALI50'
   - name: one redemption row per allowed use
     sql: SELECT count(*) <= 1 FROM redemptions WHERE code = 'DIWALI50'
+# The serial oracle (D-031): a run's outcome (these columns, plus each request's
+# HTTP status) must equal what some one-at-a-time order gives. Serial ids are
+# left out: a correct run may hand them out in another order.
+serial:
+  coupons: [code, uses]
+  redemptions: [code, user_id]

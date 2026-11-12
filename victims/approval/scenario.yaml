@@ -17,3 +17,9 @@ requests:
 invariants:
   - name: request approved at most once
     sql: SELECT count(*) <= 1 FROM approvals WHERE request_id = 1
+# The serial oracle (D-031): a run's outcome (these columns, plus each request's
+# HTTP status) must equal what some one-at-a-time order gives. Serial ids are
+# left out: a correct run may hand them out in another order.
+serial:
+  approval_requests: [id, status, version]
+  approvals: [request_id, approver]

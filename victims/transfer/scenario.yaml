@@ -25,3 +25,9 @@ invariants:
         - (SELECT coalesce(sum(amount), 0) FROM transfers WHERE from_account = a.id)
         + (SELECT coalesce(sum(amount), 0) FROM transfers WHERE to_account = a.id))
       FROM accounts a
+# The serial oracle (D-031): a run's outcome (these columns, plus each request's
+# HTTP status) must equal what some one-at-a-time order gives. Serial ids are
+# left out: a correct run may hand them out in another order.
+serial:
+  accounts: [id, balance]
+  transfers: [from_account, to_account, amount]

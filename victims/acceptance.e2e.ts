@@ -2,7 +2,8 @@
 //   - exhaustive finds the race (an invariant violation) and the finding
 //     replays identically three times;
 //   - the fixed app is clean in every order, and every order was checked;
-//   - random with seed 1 finds the race too.
+//   - random with seed 1 finds the race too;
+//   - with the invariants removed, the serial oracle alone finds it (Phase 3 exit, D-031).
 // It also records how fast each was (written to .interleave/acceptance-results-<mode>.json
 // for docs/RESULTS.md). INTERLEAVE_LOCK_DETECT=timeout runs it with the old
 // lock-wait timeout instead of asking Postgres (D-030), for the comparison. Run with `npm run test:acceptance`: it is slow and
@@ -97,7 +98,9 @@ for (const [name, newHandler] of VICTIMS) {
     assert.equal(summary.error, undefined, summary.error);
     assert.equal(summary.findings.length, 1, `no finding in ${summary.runs} runs (complete: ${summary.complete})`);
     const found = summary.findings[0];
-    assert.deepEqual(found.findings, ['invariant']);
+    // Both oracles agree: the first bad run breaks an invariant AND matches
+    // no one-at-a-time order.
+    assert.deepEqual(found.findings, ['invariant', 'serial']);
     record(name, 'exhaustive', summary);
     t.diagnostic(`found after ${summary.runs} runs:\n${formatTimeline(found, s.scenario.requests)}`);
 
@@ -105,7 +108,7 @@ for (const [name, newHandler] of VICTIMS) {
     for (let i = 1; i <= 3; i++) {
       const again: RunResult = await s.engine.replay(s.scenario, choices, TIMING);
       assert.equal(again.outcome, 'complete', again.error);
-      assert.deepEqual(again.findings, ['invariant'], `replay ${i} did not reproduce the violation`);
+      assert.deepEqual(again.findings, found.findings, `replay ${i} did not reproduce the violation`);
       assert.deepEqual(again.trace.decisions, found.trace.decisions, `replay ${i} took a different path`);
     }
   });
@@ -116,7 +119,7 @@ for (const [name, newHandler] of VICTIMS) {
     const summary = await s.engine.explore(s.scenario, OPTIONS);
     assert.equal(summary.error, undefined, summary.error);
     const bad = summary.findings[0];
-    assert.equal(bad, undefined, bad && `the fixed app broke an invariant:\n${formatTimeline(bad, s.scenario.requests)}`);
+    assert.equal(bad, undefined, bad && `the fixed app broke a rule:\n${formatTimeline(bad, s.scenario.requests)}`);
     assert.ok(summary.complete, `exploration must check every order (stopped after ${summary.runs} runs)`);
     record(name, 'fixed', summary);
     t.diagnostic(`all ${summary.runs} orders checked in ${summary.seconds.toFixed(1)}s`);
@@ -128,8 +131,21 @@ for (const [name, newHandler] of VICTIMS) {
     const summary = await s.engine.explore(s.scenario, { ...OPTIONS, strategy: 'random', maxRuns: 200 });
     assert.equal(summary.error, undefined, summary.error);
     assert.equal(summary.findings.length, 1, `random found nothing in ${summary.runs} runs`);
-    assert.deepEqual(summary.findings[0].findings, ['invariant']);
     record(name, 'random', summary);
     t.diagnostic(`found after ${summary.runs} runs`);
+  });
+
+  // Phase 3 exit (D-031): with every invariant removed, the serial oracle
+  // alone still finds the race.
+  test(`${name}: serial oracle finds it without invariants`, async (t) => {
+    const s = await setup(t, name, newHandler, false);
+    if (!s) return;
+    assert.ok(s.scenario.serial !== undefined, 'the scenario needs a serial section');
+    const summary = await s.engine.explore({ ...s.scenario, invariants: [] }, OPTIONS);
+    assert.equal(summary.error, undefined, summary.error);
+    assert.equal(summary.findings.length, 1, `no finding in ${summary.runs} runs (complete: ${summary.complete})`);
+    assert.deepEqual(summary.findings[0].findings, ['serial']);
+    record(name, 'serialOnly', summary);
+    t.diagnostic(`found after ${summary.runs} runs:\n${formatTimeline(summary.findings[0], s.scenario.requests)}`);
   });
 }

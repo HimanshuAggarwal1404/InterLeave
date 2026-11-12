@@ -19,3 +19,9 @@ invariants:
     sql: SELECT stock >= 0 FROM products WHERE name = 'widget'
   - name: one order for the one widget
     sql: SELECT count(*) <= 1 FROM orders WHERE product = 'widget'
+# The serial oracle (D-031): a run's outcome (these columns, plus each request's
+# HTTP status) must equal what some one-at-a-time order gives. Serial ids are
+# left out: a correct run may hand them out in another order.
+serial:
+  products: [name, stock]
+  orders: [product, qty, user_id]

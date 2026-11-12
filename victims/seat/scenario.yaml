@@ -17,3 +17,8 @@ requests:
 invariants:
   - name: seat booked at most once
     sql: SELECT count(*) <= 1 FROM bookings WHERE seat = '12A'
+# The serial oracle (D-031): a run's outcome (these columns, plus each request's
+# HTTP status) must equal what some one-at-a-time order gives. Serial ids are
+# left out: a correct run may hand them out in another order.
+serial:
+  bookings: [seat, user_id]
