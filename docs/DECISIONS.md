@@ -403,3 +403,19 @@ so the grace costs nothing for it.
 Alternatives: a warm-up run before exploring (does not cover apps that open connections later or
 start slowly for other reasons); a longer quiet period everywhere (slows every decision).
 Consequences: 15 of 15 explorations took the same path afterwards; no CLI flag for now.
+
+## D-030: Detect lock waits by asking Postgres (pg_blocking_pids), polled; keep the timeout as a mode
+Status: Accepted      Date: 2026-11-12
+Context: D-007's 200 ms timeout costs 200 ms for every statement that waits for a lock (fixed
+variants explore at 5-7 runs/s) and can misjudge a statement that is merely slow. Phase 3 replaces
+it and compares both.
+Decision: the proxy records each connection's backend PID from BackendKeyData and passes it to
+`onQuery`. After releasing a statement, the scheduler polls an injected probe every 10 ms
+(`--lock-poll`); the runner implements the probe as `SELECT pg_blocking_pids(<pid>)` on the admin
+connection: a non-empty answer means blocked, and names the blocking PIDs. `--lock-detect pg|timeout`
+(default pg) keeps the old timeout, which is also the fallback when a statement's PID is unknown.
+Alternatives: `pg_stat_activity.wait_event_type = 'Lock'` (does not say who blocks); joining
+`pg_locks` by hand (reimplements pg_blocking_pids); probing once after a delay (catches late
+blocking late); dropping the timeout (no comparison, no fallback).
+Consequences: one cheap query per 10 ms while a statement runs; exact "blocked" instead of a guess;
+the before/after numbers go into RESULTS.md.
