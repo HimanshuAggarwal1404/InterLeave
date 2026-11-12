@@ -178,7 +178,8 @@ when the coupon is exhausted), so schedules are not precomputed. Instead:
 
 - Done (D-030): lock waits via `pg_blocking_pids` using the recorded backend PIDs instead of
   timeouts; 3.7-5.5x faster exploration of the fixed victims (RESULTS.md).
-- Serial-equivalence oracle: run the requests serially in every order, snapshot chosen tables,
+- Done (D-031): serial-equivalence oracle (`src/oracle/serial.ts`); finds all 8 victim races with
+  the invariants removed. Original plan: run the requests serially in every order, snapshot chosen tables,
   flag concurrent outcomes matching no serial outcome.
 - PCT strategy (random priorities with d change points) and partial-order reduction
   (steps on disjoint tables/rows commute).

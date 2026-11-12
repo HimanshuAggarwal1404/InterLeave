@@ -35,7 +35,8 @@ numbers in `RESULTS.md`.
 
 ## Phase 3: Make it smart (weeks 6-8)
 - Lock-wait detection via `pg_stat_activity` using backend PIDs; compare with timeout approach.
-- Serial-equivalence oracle (no user-written invariants needed).
+- Serial-equivalence oracle (no user-written invariants needed). Done 2026-11-12: finds all 8
+  victim races with the invariants removed (`npm run test:acceptance`).
 - PCT strategy; compare runs-to-detection against random and exhaustive.
 - Partial-order reduction heuristic (independent steps commute); measure schedules saved.
 - Shrinker (delta debugging) for failing schedules.

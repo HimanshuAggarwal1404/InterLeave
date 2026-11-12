@@ -165,6 +165,29 @@ numbers: the rows above stop after 1-4 runs, so their runs/sec mostly measures t
 - Exhaustive found every race in 3-4 runs: the first orders it tries run A's transaction first,
   which is serial and safe; the race appears as soon as B's first statements move before A's write.
 
+## Serial-equivalence oracle (Phase 3, 2026-11-12)
+
+Phase 3 exit test, part 1: every victim's race found by the serial oracle with **all invariants
+removed** (D-031). Exhaustive strategy, lock detection pg. Tree at f87cc21; command
+`npm run test:acceptance` (32/32 passed); raw numbers in `.interleave/acceptance-results-pg.json`.
+
+| Victim | Serial oracle alone: runs to first violation | With invariants + serial: runs to first violation | Fixed variant clean with both oracles? |
+|---|---|---|---|
+| coupon | 3 (0.157 s) | 3 | yes, all 36 orders (1.574 s) |
+| inventory | 3 (0.282 s) | 3 | yes, all 24 orders (0.842 s) |
+| seat | 4 (0.184 s) | 4 | yes, all 36 orders (1.627 s) |
+| wallet | 3 (0.279 s) | 3 | yes, all 92 orders (2.919 s) |
+| username | 3 (0.123 s) | 3 | yes, all 36 orders (1.159 s) |
+| transfer | 3 (0.275 s) | 3 | yes, all 50 orders (1.671 s) |
+| approval | 3 (0.161 s) | 3 | yes, all 92 orders (3.147 s) |
+| counter | 3 (0.411 s) | 3 | yes, all 24 orders (0.917 s) |
+
+Notes:
+- With both oracles on, the first bad run was flagged by both in all 8 victims (findings
+  `invariant, serial`): the serial oracle loses nothing against the hand-written rules here.
+- No false findings: all 8 fixed variants match a one-at-a-time order in every explored order.
+- Cost: 2 extra serial runs per exploration (2 requests: A then B, B then A).
+
 ## Baseline: naive concurrent blasting (for comparison)
 | Date | Victim | Requests fired per trial | Trials | Trials that exposed the bug |
 |---|---|---|---|---|

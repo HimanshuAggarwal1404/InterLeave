@@ -342,7 +342,11 @@ The kill test needed someone to *know* the bad order. The engine finds it. One *
    **quiet period**; 1 s before its first statement, while its app may still be connecting), so
    an app that never sends another statement cannot stall the run.
 4. **Judge**: run each invariant (`src/oracle/`). Any answer other than a single `true` is a
-   violation. A Postgres deadlock error (`40P01`) also counts as a finding.
+   violation. A Postgres deadlock error (`40P01`) also counts as a finding. And if the scenario
+   has a `serial:` section, the **serial oracle** compares the result (the listed columns plus each
+   request's HTTP status) with what running the requests *one at a time* gives, in every order:
+   a result no one-at-a-time order can produce is a race, no hand-written rule needed. It finds
+   all 8 victims' races with their invariants deleted.
 
 The **explorer** (`src/explore/`) decides what each run tries. `exhaustive` (the default) walks the
 tree of all choices depth-first: run 1 always picks the first runnable request, and each next run

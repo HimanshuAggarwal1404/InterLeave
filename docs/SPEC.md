@@ -53,7 +53,14 @@ invariants:                             # each must return a single boolean true
     sql: SELECT uses <= max_uses FROM coupons WHERE code = 'DIWALI50'
   - name: one redemption row per allowed use
     sql: SELECT count(*) <= 1 FROM redemptions WHERE code = 'DIWALI50'
+serial:                                 # optional (Phase 3, D-031): the serial oracle
+  coupons: [code, uses]                 # table: the columns that make up a run's outcome
+  redemptions: [code, user_id]          # (leave out serial ids and timestamps)
 ```
+
+A scenario needs `invariants`, a `serial` section, or both. With `serial`, a run's outcome is
+the listed columns (rows sorted) plus each request's HTTP status, and it must equal the outcome
+of the same requests run one at a time in some order (at most 5 requests: n! orders).
 
 ## 5. Functional requirements
 
@@ -107,6 +114,9 @@ invariants:                             # each must return a single boolean true
 **Judging and reset**
 - FR-17: Before each run, execute the scenario's `reset` SQL on the admin connection.
 - FR-18: After each run, execute each invariant; any result other than a single `true` is a violation.
+  With a `serial` section (Phase 3, D-031), Interleave first runs the requests one at a time in
+  every order and records each outcome; a completed run whose outcome matches none of them is a
+  violation too (finding kind `serial`), and the report shows its outcome next to each serial one.
 - FR-19: Record each request's HTTP status and body in the run result.
 
 **Reporting and replay**
