@@ -151,7 +151,7 @@ numbers: the rows above stop after 1-4 runs, so their runs/sec mostly measures t
 
 2026-11-11 notes:
 - Command: `npm run test:acceptance` (`victims/acceptance.e2e.ts`), tree at 864855c; raw numbers in
-  `.interleave/acceptance-results.json`. In-process: the test starts the engine (proxy on a free
+  `.interleave/acceptance-results.json` (now `acceptance-results-<mode>.json`). In-process: the test starts the engine (proxy on a free
   port), the victim app pointed at it, and calls the same `Engine.explore` / `Engine.replay` as
   `interleave run` / `interleave replay`. Timing defaults: quiet 50 ms, lock wait 200 ms, start
   grace 1 s, run timeout 10 s. `--max-runs` 1000 (exhaustive), 200 (random).
@@ -182,6 +182,28 @@ The two rows below are historical (Go implementation).
 |---|---|---|---|---|---|
 | 2026-10-04 | before f3b9be1, after fd9fddb | Proxy write batching: send messages that arrived together in one `Write` (done in Phase 1, D-014) | req/s through proxy, coupon 409 path, median of 4 alternating rounds | 9414.3 | 11348.4 (+20.5%; faster in 4/4 rounds) |
 | 2026-10-04 | same | same | p50 latency the proxy adds per request (vs direct, same run) | 0.98 ms | 0.53 ms |
+| 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | coupon fixed: complete exhaustive exploration (36 orders both ways), seconds / runs per s | 6.08 s / 5.921 | 1.577 s / 22.831 (3.9x faster) |
+| 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | inventory fixed: complete exhaustive exploration (24 orders both ways), seconds / runs per s | 3.743 s / 6.412 | 0.898 s / 26.722 (4.2x faster) |
+| 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | seat fixed: complete exhaustive exploration (36 orders both ways), seconds / runs per s | 6.137 s / 5.866 | 1.125 s / 31.999 (5.5x faster) |
+| 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | wallet fixed: complete exhaustive exploration (92 orders both ways), seconds / runs per s | 12.736 s / 7.224 | 2.739 s / 33.589 (4.6x faster) |
+| 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | username fixed: complete exhaustive exploration (36 orders both ways), seconds / runs per s | 5.857 s / 6.147 | 1.278 s / 28.164 (4.6x faster) |
+| 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | transfer fixed: complete exhaustive exploration (50 orders both ways), seconds / runs per s | 9.024 s / 5.541 | 1.785 s / 28.004 (5.1x faster) |
+| 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | approval fixed: complete exhaustive exploration (92 orders both ways), seconds / runs per s | 13.052 s / 7.049 | 2.694 s / 34.147 (4.8x faster) |
+| 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | counter fixed: complete exhaustive exploration (24 orders both ways), seconds / runs per s | 3.819 s / 6.284 | 1.024 s / 23.437 (3.7x faster) |
+
+2026-11-12 lock-wait detection notes:
+- Commands: `npm run test:acceptance` (default, `--lock-detect pg`) and
+  `INTERLEAVE_LOCK_DETECT=timeout npm run test:acceptance` (the MVP's 200 ms timeout), one after
+  the other, tree at d2bc1db plus the acceptance switch; raw numbers in
+  `.interleave/acceptance-results-pg.json` and `-timeout.json`. Both runs 24/24.
+- Whole acceptance run: 65.4 s with the timeout, 18.3 s asking Postgres.
+- Both modes explored exactly the same number of orders for every victim and found every buggy
+  variant's race at the same run (exhaustive 3-4, random seed 1: 1-4): detection changed only the
+  speed, not what is explored.
+- Why it is faster: in the fixed variants many orders make one request wait for the other's row
+  lock. The timeout always spent 200 ms per such wait; pg_blocking_pids notices it at the first
+  10 ms poll. It is also exact: a slow statement that is not waiting for a lock is no longer
+  mistaken for a blocked one, and the timeline names the request holding the lock.
 
 Command for both rows: `go run ./cmd/bench --rounds 4 http://localhost:8081/redeem
 http://localhost:8082/redeem http://localhost:8083/redeem`. Full table and setup: "Before/after:

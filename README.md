@@ -7,7 +7,7 @@ Interleave finds race conditions in web apps that use Postgres. It is a command-
 > **Status:** Phases 0-2 done: the MVP works. `interleave run` tries statement orders by itself,
 > finds the race in all 8 victim apps within 3-4 runs, reports none in any of their fixed versions
 > (every order checked), and every finding replays identically with `interleave replay` (numbers in
-> `docs/RESULTS.md`). Next is Phase 3: making the search smarter. This README explains, in plain
+> `docs/RESULTS.md`). Phase 3 (making the search smarter) has started: lock waits are now detected by asking Postgres, which made exploring the fixed apps 3.7-5.5x faster. This README explains, in plain
 > words, everything that exists so far and how to try each piece yourself. The full plan is in `docs/ROADMAP.md`; the detailed "why" is in
 > `docs/OVERVIEW.md`; every test command is in `docs/TESTING.md`.
 
@@ -334,8 +334,9 @@ The kill test needed someone to *know* the bad order. The engine finds it. One *
    (`src/harness/`).
 3. **Schedule** their statements with `RunScheduler` (`src/sched/run.ts`). Each request is
    *running* (in app code), *parked* (a statement waits at the red light), *executing* (released,
-   Postgres is working on it), *blocked* (executing for over 200 ms: probably waiting for a row
-   lock the other request holds) or *finished* (its HTTP response arrived). When nothing is
+   Postgres is working on it), *blocked* (waiting for a row lock the other request holds:
+   Interleave asks Postgres every 10 ms with `pg_blocking_pids`) or *finished* (its HTTP response
+   arrived). When nothing is
    running or executing and something is parked, that is a **decision point**: the explorer picks
    which parked request goes next. A request still in app code is waited for only 50 ms (the
    **quiet period**; 1 s before its first statement, while its app may still be connecting), so

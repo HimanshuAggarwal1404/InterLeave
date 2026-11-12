@@ -3,8 +3,9 @@
 //     replays identically three times;
 //   - the fixed app is clean in every order, and every order was checked;
 //   - random with seed 1 finds the race too.
-// It also records how fast each was (written to .interleave/acceptance-results.json
-// for docs/RESULTS.md). Run with `npm run test:acceptance`: it is slow and
+// It also records how fast each was (written to .interleave/acceptance-results-<mode>.json
+// for docs/RESULTS.md). INTERLEAVE_LOCK_DETECT=timeout runs it with the old
+// lock-wait timeout instead of asking Postgres (D-030), for the comparison. Run with `npm run test:acceptance`: it is slow and
 // shares tables with the victim tests, so it is not part of `npm test`.
 import { after, test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,7 +23,7 @@ import { newHandler as seat } from './seat/app.ts';
 import { newHandler as transfer } from './transfer/app.ts';
 import { newHandler as username } from './username/app.ts';
 import { newHandler as wallet } from './wallet/app.ts';
-import { DEFAULT_TIMING, Engine, type ExploreSummary, type RunResult } from '../src/runner/index.ts';
+import { DEFAULT_TIMING, Engine, type ExploreSummary, type LockDetect, type RunResult } from '../src/runner/index.ts';
 import { loadScenario, type Scenario } from '../src/scenario/index.ts';
 import { formatTimeline } from '../src/report/index.ts';
 import { onCleanup } from '../src/testutil/cleanup.ts';
@@ -40,7 +41,9 @@ const VICTIMS: [name: string, newHandler: NewHandler][] = [
   ['counter', counter],
 ];
 
-const OPTIONS = { ...DEFAULT_TIMING, strategy: 'exhaustive' as const, seed: 1, maxRuns: 1000, all: false };
+const LOCK_DETECT: LockDetect = process.env['INTERLEAVE_LOCK_DETECT'] === 'timeout' ? 'timeout' : 'pg';
+const TIMING = { ...DEFAULT_TIMING, lockDetect: LOCK_DETECT };
+const OPTIONS = { ...TIMING, strategy: 'exhaustive' as const, seed: 1, maxRuns: 1000, all: false };
 
 // setup starts the engine (proxy on a free port) and the victim pointed at it,
 // and returns the victim's scenario aimed at that app.
@@ -83,7 +86,7 @@ after(async () => {
   }
   const dir = fileURLToPath(new URL('../.interleave/', import.meta.url));
   await mkdir(dir, { recursive: true });
-  await writeFile(`${dir}acceptance-results.json`, `${JSON.stringify({ when: new Date().toISOString(), timing: DEFAULT_TIMING, victims: stats }, null, 2)}\n`);
+  await writeFile(`${dir}acceptance-results-${LOCK_DETECT}.json`, `${JSON.stringify({ when: new Date().toISOString(), timing: TIMING, victims: stats }, null, 2)}\n`);
 });
 
 for (const [name, newHandler] of VICTIMS) {
@@ -100,7 +103,7 @@ for (const [name, newHandler] of VICTIMS) {
 
     const choices = found.trace.decisions.map((d) => d.chosen);
     for (let i = 1; i <= 3; i++) {
-      const again: RunResult = await s.engine.replay(s.scenario, choices, DEFAULT_TIMING);
+      const again: RunResult = await s.engine.replay(s.scenario, choices, TIMING);
       assert.equal(again.outcome, 'complete', again.error);
       assert.deepEqual(again.findings, ['invariant'], `replay ${i} did not reproduce the violation`);
       assert.deepEqual(again.trace.decisions, found.trace.decisions, `replay ${i} took a different path`);

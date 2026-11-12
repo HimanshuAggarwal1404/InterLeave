@@ -22,7 +22,8 @@ violation, and prints a minimal-enough failing timeline that can be replayed det
 ```
 interleave run <scenario.yaml> [--strategy exhaustive|random] [--max-runs 1000] [--seed 1] [--all]
                 [--out .interleave] [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432]
-                [--quiet 50ms] [--lock-wait 200ms] [--run-timeout 10s]
+                [--quiet 50ms] [--lock-detect pg|timeout] [--lock-poll 10ms] [--lock-wait 200ms]
+                [--run-timeout 10s]
 interleave replay <schedule.json> [--step]
 interleave proxy [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432] [--verbose]   # pass-through only, for debugging (D-012); --verbose logs queries + tags
 ```
@@ -87,7 +88,11 @@ invariants:                             # each must return a single boolean true
   decision must not depend on how long that takes (NFR-2).
 - FR-11: Lock-wait detection (MVP): if a released statement has not returned `ReadyForQuery`
   within a timeout (default 200 ms), mark that request blocked and continue scheduling others.
-  When its `ReadyForQuery` arrives it becomes runnable again.
+  When its `ReadyForQuery` arrives it becomes runnable again. Since Phase 3 (D-030) the default
+  is `--lock-detect pg`: while a statement executes, Interleave asks Postgres every 10 ms
+  (`pg_blocking_pids` with the connection's backend PID) and marks it blocked as soon as it waits
+  for a lock, naming the request that holds it; `--lock-detect timeout` keeps the MVP rule, which
+  is also the fallback for a statement whose PID is unknown.
 - FR-12: A run ends when all requests have received HTTP responses or a run timeout (default 10 s)
   fires. A run timeout is reported as a distinct outcome, not a violation.
 

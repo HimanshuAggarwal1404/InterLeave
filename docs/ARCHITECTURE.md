@@ -70,8 +70,9 @@ shared types. Keep `sched` free of networking so it can be unit-tested with fake
 - **Request**: one logical HTTP request in a scenario, tagged `A`, `B`, ...
 - **Step**: one `Q` (simple query) message from a request, held at the proxy until released.
 - **Request state**: `running` (in app code, no parked step) · `parked` (step waiting) ·
-  `executing` (step released, awaiting `ReadyForQuery`) · `blocked` (executing past the lock-wait
-  timeout) · `finished` (HTTP response received).
+  `executing` (step released, awaiting `ReadyForQuery`) · `blocked` (waiting for a lock: Postgres
+  says so via `pg_blocking_pids`, or, in timeout mode, executing past the lock-wait timeout) ·
+  `finished` (HTTP response received).
 - **Decision point**: no request is `running` or `executing`; at least one is `parked`.
   A `running` request is waited for only up to the quiet period (50 ms after the last event), or,
   before its first statement, up to the start grace (1 s from the start of the run: the app may
@@ -92,8 +93,12 @@ shared types. Keep `sched` free of networking so it can be unit-tested with fake
    code), asks the explorer for a choice, releases that step. `proxy` forwards it upstream.
 6. `proxy` sees `ReadyForQuery` from upstream for that connection, forwards it to the client,
    tells `sched` the step completed (with a result summary for the timeline).
-7. If `ReadyForQuery` does not arrive within the lock-wait timeout, `sched` marks the request
-   `blocked` and continues with other choices. When it arrives later, the request resumes.
+7. While the step executes, `sched` polls a probe every 10 ms; the runner answers it with
+   `SELECT pg_blocking_pids(<backend PID>)` on the admin connection (the proxy records each
+   connection's PID from BackendKeyData). A non-empty answer marks the request `blocked` (and
+   names who holds the lock); `sched` continues with other choices. When `ReadyForQuery` arrives
+   later, the request resumes. With `--lock-detect timeout`, or without a PID, a step that has
+   not answered within the lock-wait timeout (200 ms) counts as blocked instead (D-007, D-030).
 8. When every request is `finished`, `oracle` runs the invariants on the admin connection.
 9. `runner` records the result. On violation, `report` prints the timeline and writes the schedule.
 
@@ -158,7 +163,7 @@ when the coupon is exhausted), so schedules are not precomputed. Instead:
 - Connection pools open connections lazily and keep idle ones. Untagged health checks must pass
   through without scheduling or the run deadlocks.
 - A released `UPDATE` can block on a row lock held by another parked request's open transaction.
-  That is exactly the case the lock-wait timeout exists for.
+  That is exactly the case lock-wait detection exists for.
 - Reset SQL must not run while app transactions are open; the runner must wait for all requests
   to finish (or kill the run) before resetting.
 - Local Postgres is **18.6** (native Windows service). Postgres 18 added **protocol 3.2**
@@ -171,7 +176,8 @@ when the coupon is exhausted), so schedules are not precomputed. Instead:
 
 ## 9. Evolution after the MVP (see ROADMAP.md)
 
-- Lock waits via `pg_stat_activity` / `pg_locks` using the recorded backend PIDs instead of timeouts.
+- Done (D-030): lock waits via `pg_blocking_pids` using the recorded backend PIDs instead of
+  timeouts; 3.7-5.5x faster exploration of the fixed victims (RESULTS.md).
 - Serial-equivalence oracle: run the requests serially in every order, snapshot chosen tables,
   flag concurrent outcomes matching no serial outcome.
 - PCT strategy (random priorities with d change points) and partial-order reduction
