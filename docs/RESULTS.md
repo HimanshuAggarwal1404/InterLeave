@@ -165,6 +165,36 @@ numbers: the rows above stop after 1-4 runs, so their runs/sec mostly measures t
 - Exhaustive found every race in 3-4 runs: the first orders it tries run A's transaction first,
   which is serial and safe; the race appears as soon as B's first statements move before A's write.
 
+## Partial-order reduction (Phase 3, 2026-11-12)
+
+`--por` (D-034): sleep sets in the exhaustive DFS, with statement independence read from the SQL
+text at table level. Command `npm run measure:por` at 5be0442's tree (exit 0: every fixed variant clean
+both ways, every buggy variant found); raw numbers in `.interleave/por.json`.
+
+| Victim | Fixed: complete exploration, no reduction | Fixed: with --por | Fewer runs | Buggy with --por: first violation |
+|---|---|---|---|---|
+| coupon | 36 (1.94 s) | 8, 2 cut short (0.49 s) | 4.5x | run 2 |
+| inventory | 24 (1.08 s) | 6, 2 cut short (0.36 s) | 4.0x | run 2 |
+| seat | 36 (1.79 s) | 7, 3 cut short (0.43 s) | 5.1x | run 3 |
+| wallet | 92 (3.47 s) | 13, 3 cut short (0.67 s) | 7.1x | run 2 |
+| username | 36 (1.49 s) | 7, 3 cut short (0.49 s) | 5.1x | run 2 |
+| transfer | 50 (2.16 s) | 10, 2 cut short (0.68 s) | 5.0x | run 2 |
+| approval | 92 (3.77 s) | 13, 3 cut short (0.71 s) | 7.1x | run 2 |
+| counter | 24 (1.07 s) | 6, 2 cut short (0.59 s) | 4.0x | run 2 |
+| ledger | 1026 (42.69 s) | 14, 2 cut short (0.77 s) | 73.3x | run 12 |
+
+Notes:
+- Same verdicts everywhere: no fixed variant reported anything with or without reduction, and every
+  buggy variant was still found (sooner: run 2-3 instead of 3-4; the ledger in 12 runs instead of
+  exhaustive's 286, about PCT's median).
+- The ledger gains most because the close's 8 audit inserts touch a table the deposit never
+  touches, so their order relative to the deposit cannot matter; without reduction exhaustive
+  search tries all those orders.
+- "Cut short": runs in which every runnable request was asleep; they stop early and are not judged.
+- Soundness rests on the table-level reading of the SQL (src/explore/access.ts): a trigger or rule
+  that writes a table not named in the statement would make two "independent" statements conflict.
+  That is why --por is opt-in.
+
 ## Shrinker (Phase 3, 2026-11-12)
 
 Every finding is shrunk before it is reported (D-033). Switches between requests in the finding,
@@ -281,6 +311,7 @@ The two rows below are historical (Go implementation).
 | 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | transfer fixed: complete exhaustive exploration (50 orders both ways), seconds / runs per s | 9.024 s / 5.541 | 1.785 s / 28.004 (5.1x faster) |
 | 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | approval fixed: complete exhaustive exploration (92 orders both ways), seconds / runs per s | 13.052 s / 7.049 | 2.694 s / 34.147 (4.8x faster) |
 | 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | counter fixed: complete exhaustive exploration (24 orders both ways), seconds / runs per s | 3.819 s / 6.284 | 1.024 s / 23.437 (3.7x faster) |
+| 2026-11-12 | 5be0442 | Partial-order reduction (sleep sets over table-level read/write sets, `--por`, D-034) | runs for a complete exhaustive exploration of the fixed variants (9 victims) | coupon 36 · inventory 24 · seat 36 · wallet 92 · username 36 · transfer 50 · approval 92 · counter 24 · ledger 1026 | coupon 8 · inventory 6 · seat 7 · wallet 13 · username 7 · transfer 10 · approval 13 · counter 6 · ledger 14 |
 
 2026-11-12 lock-wait detection notes:
 - Commands: `npm run test:acceptance` (default, `--lock-detect pg`) and

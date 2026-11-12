@@ -39,7 +39,8 @@ numbers in `RESULTS.md`.
   victim races with the invariants removed (`npm run test:acceptance`).
 - PCT strategy; compare runs-to-detection against random and exhaustive. Done 2026-11-12
   (`--strategy pct`, benchmark victim ledger, `npm run compare`; RESULTS.md).
-- Partial-order reduction heuristic (independent steps commute); measure schedules saved.
+- Partial-order reduction heuristic (independent steps commute); measure schedules saved. Done
+  2026-11-12 (`--por`, D-034): 4-7x fewer runs on the fixed victims, 73x on the ledger; RESULTS.md.
 - Shrinker (delta debugging) for failing schedules. Done 2026-11-12: every finding is shrunk to
   the fewest switches (2 for all victims) in 0-3 extra runs (13 for the ledger); RESULTS.md.
 - Template-database fast reset; measure resets/sec before and after.

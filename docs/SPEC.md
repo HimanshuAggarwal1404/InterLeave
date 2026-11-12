@@ -20,7 +20,7 @@ violation, and prints a minimal-enough failing timeline that can be replayed det
 ## 3. CLI (MVP)
 
 ```
-interleave run <scenario.yaml> [--strategy exhaustive|random|pct] [--depth 2] [--max-runs 1000] [--seed 1] [--all] [--no-shrink]
+interleave run <scenario.yaml> [--strategy exhaustive|random|pct] [--depth 2] [--max-runs 1000] [--seed 1] [--all] [--no-shrink] [--por]
                 [--out .interleave] [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432]
                 [--quiet 50ms] [--lock-detect pg|timeout] [--lock-poll 10ms] [--lock-wait 200ms]
                 [--run-timeout 10s]
@@ -107,6 +107,8 @@ of the same requests run one at a time in some order (at most 5 requests: n! ord
 - FR-13: A schedule is the sequence of choices "which request's parked statement goes next".
 - FR-14: `exhaustive`: depth-first search over the choice tree, replaying the prefix from a reset
   database each run, until the tree is exhausted or `--max-runs`.
+- FR-14b (Phase 3, D-034): `--por`: exhaustive search skips orders that only swap independent
+  statements (sleep sets over table-level read/write sets from the SQL text); opt-in.
 - FR-15b (Phase 3, D-032): `pct`: Probabilistic Concurrency Testing: random request priorities,
   `--depth` - 1 random change points where the request about to run is demoted; seeded.
 - FR-15: `random`: at each decision point pick uniformly among runnable requests; seeded and
