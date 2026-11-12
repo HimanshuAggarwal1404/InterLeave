@@ -85,6 +85,25 @@ const summary: ExploreSummary = {
   firstFindingAfterSeconds: 0.5,
 };
 
+test('TimelineShowsTheSerialVerdict', () => {
+  const coupons = (uses: number) => ({ coupons: [['DIWALI50', uses]] });
+  const serialOutcomes = [
+    { order: ['A', 'B'], outcome: { tables: coupons(1), statuses: { A: 200, B: 409 } } },
+    // Recorded in firing order (B first); printed in tag order like the others.
+    { order: ['B', 'A'], outcome: { tables: coupons(1), statuses: { B: 200, A: 409 } } },
+  ];
+  const race = { ...raceRun, serial: { outcome: { tables: coupons(2), statuses: { A: 200, B: 200 } }, serialOutcomes } };
+  const lines = formatTimeline(race, requests).split('\n');
+  assert.deepEqual(lines.slice(-4), [
+    '✗ the result matches no one-at-a-time order:',
+    '    this run:        coupons [["DIWALI50",2]] · A 200, B 200',
+    '    A then B:        coupons [["DIWALI50",1]] · A 200, B 409',
+    '    B then A:        coupons [["DIWALI50",1]] · A 409, B 200',
+  ]);
+  const fine = { ...raceRun, serial: { outcome: serialOutcomes[1].outcome, matched: ['B', 'A'], serialOutcomes } };
+  assert.equal(formatTimeline(fine, requests).split('\n').at(-1), '✓ same result as running them one at a time (B then A)');
+});
+
 test('Summary', () => {
   assert.match(formatSummary(summary), /^RACE FOUND: 1 finding in 7 runs\.\n7 runs in 0\.50s \(14\.0 runs\/s, resets 350\.0\/s\); first finding after 7 runs/);
   assert.match(formatSummary({ ...summary, findings: [], complete: true, firstFindingAfterRuns: undefined }), /No violation\. Complete: all 7 orders checked/);

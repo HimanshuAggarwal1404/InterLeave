@@ -392,6 +392,7 @@ COMMIT
 | transfer | 8086 | lost update: balances written from stale reads | lock both rows, always in id order (no deadlock) |
 | approval | 8087 | two managers approve one request | optimistic locking: `UPDATE ... WHERE version = <read>` |
 | counter | 8088 | read, add 1 in the app, write back | `SET n = n + 1` in the database |
+| ledger (benchmark) | 8089 | a deposit read before the long month-end close, written after it: the fee is lost | `SET balance = balance + amount`; used to compare strategies (`npm run compare`) |
 
 They share `victims/common/`: one HTTP endpoint helper (tag check, JSON body, 400/404/405/500) and
 `transaction()`, which tags `BEGIN`/`COMMIT`/`ROLLBACK` and rolls back on every path that does not

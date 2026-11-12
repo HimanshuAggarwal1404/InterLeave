@@ -76,7 +76,7 @@ function formatSerial(check: NonNullable<RunResult['serial']>): string[] {
     return [`✓ same result as running them one at a time (${check.matched.join(' then ')})`];
   }
   const show = (o: Outcome) =>
-    [...Object.entries(o.tables).map(([t, rows]) => `${t} ${JSON.stringify(rows)}`), Object.entries(o.statuses).map(([tag, st]) => `${tag} ${st}`).join(', ')].join(' · ');
+    [...Object.entries(o.tables).map(([t, rows]) => `${t} ${JSON.stringify(rows)}`), Object.entries(o.statuses).sort(([a], [b]) => a.localeCompare(b)).map(([tag, st]) => `${tag} ${st}`).join(', ')].join(' · ');
   return [
     '✗ the result matches no one-at-a-time order:',
     `    this run:        ${show(check.outcome)}`,
