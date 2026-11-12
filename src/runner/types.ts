@@ -8,6 +8,14 @@ import type { RunTrace } from '../sched/run.ts';
 // 'serial': the outcome matches no one-at-a-time order of the requests (D-031).
 export type FindingKind = 'invariant' | 'deadlock' | 'serial';
 
+// ShrinkInfo says how a finding was simplified (D-033).
+export type ShrinkInfo = {
+  fromRun: number; // the run that first showed the bug
+  fromSwitches: number; // switches between requests in that run
+  toSwitches: number; // switches in the shrunk run (this result)
+  attempts: number; // extra runs the shrinker made
+};
+
 // SerialCheck is the serial oracle's verdict on one run.
 export type SerialCheck = {
   outcome: Outcome; // this run's outcome
@@ -28,6 +36,7 @@ export type RunResult = {
   responses: Response[];
   invariants: InvariantResult[];
   serial?: SerialCheck; // set when the scenario has a serial section and the run completed
+  shrunk?: ShrinkInfo; // set when this finding was shrunk (D-033)
   findings: FindingKind[]; // empty: the run is clean
   resetMs: number;
   ms: number;
@@ -51,6 +60,7 @@ export type ExploreSummary = {
   seconds: number;
   resetSeconds: number; // total time spent resetting
   serialOrders?: number; // one-at-a-time orders run first for the serial oracle
+  shrinkRuns?: number; // extra runs made by the shrinker (not counted in runs)
   firstFindingAfterRuns?: number;
   firstFindingAfterSeconds?: number;
 };

@@ -100,6 +100,18 @@ export function describeFindings(result: RunResult): string {
   return parts.join('; ');
 }
 
+// describeShrink says how a finding was simplified, or '' if it was not.
+export function describeShrink(result: RunResult): string {
+  const s = result.shrunk;
+  if (s === undefined) {
+    return '';
+  }
+  if (s.toSwitches === s.fromSwitches) {
+    return `Already as simple as it gets: ${s.toSwitches} switch${s.toSwitches === 1 ? '' : 'es'} between requests (${s.attempts} runs to check).`;
+  }
+  return `Shrunk from ${s.fromSwitches} to ${s.toSwitches} switches between requests (${s.attempts} extra runs; first seen in run ${s.fromRun}).`;
+}
+
 // formatSummary is the closing report of `interleave run` (FR-24).
 export function formatSummary(s: ExploreSummary): string {
   const lines: string[] = [];

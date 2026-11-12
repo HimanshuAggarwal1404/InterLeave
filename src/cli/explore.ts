@@ -3,14 +3,14 @@ import http from 'node:http';
 import { parseArgs } from 'node:util';
 import { DEFAULT_TIMING, Engine, type RunResult, type Strategy, type TimingOptions } from '../runner/index.ts';
 import { ScenarioError, loadScenario, type Scenario } from '../scenario/index.ts';
-import { describeFindings, formatSummary, formatTimeline, readSchedule, stripTag, toScheduleFile, writeSchedule } from '../report/index.ts';
+import { describeFindings, describeShrink, formatSummary, formatTimeline, readSchedule, stripTag, toScheduleFile, writeSchedule } from '../report/index.ts';
 import { parseDuration } from '../duration.ts';
 import { errorMessage } from '../log.ts';
 import { EXIT_FOUND, EXIT_INTERNAL, EXIT_OK, EXIT_USAGE } from './exit.ts';
 import { lineReader } from './lines.ts';
 
 export const runUsage = `  interleave run <scenario.yaml> [--strategy exhaustive|random|pct] [--depth 2] [--max-runs 1000] [--seed 1]
-                 [--all] [--out .interleave] [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432]
+                 [--all] [--no-shrink] [--out .interleave] [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432]
                  [--lock-detect pg|timeout] [--lock-poll 10ms] [--lock-wait 200ms]
                  [--quiet 50ms] [--run-timeout 10s]
       try orders of the scenario's requests until an invariant breaks; the app must
@@ -58,6 +58,7 @@ export async function runExplore(args: string[], signal?: AbortSignal): Promise<
         'max-runs': { type: 'string', default: '1000' },
         seed: { type: 'string', default: '1' },
         all: { type: 'boolean', default: false },
+        'no-shrink': { type: 'boolean', default: false },
         out: { type: 'string', default: '.interleave' },
       },
     });
@@ -109,6 +110,7 @@ export async function runExplore(args: string[], signal?: AbortSignal): Promise<
         depth,
         maxRuns,
         all: values.all,
+        shrink: !values['no-shrink'],
         signal: stop.signal,
         onRun: (r) => progress(r),
       });
@@ -118,7 +120,9 @@ export async function runExplore(args: string[], signal?: AbortSignal): Promise<
     }
     for (const found of summary.findings) {
       const file = await writeSchedule(values.out, toScheduleFile(summary, found));
-      console.log(`\nFOUND in run ${found.index}: ${describeFindings(found)}\n`);
+      console.log(`\nFOUND in run ${found.shrunk?.fromRun ?? found.index}: ${describeFindings(found)}`);
+      const shrunk = describeShrink(found);
+      console.log(shrunk === '' ? '' : `${shrunk}\n`);
       console.log(formatTimeline(found, scenario.requests));
       console.log(`\nReplay: interleave replay ${file.replaceAll('\\', '/')}`);
     }

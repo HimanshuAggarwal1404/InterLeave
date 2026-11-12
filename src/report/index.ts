@@ -1,6 +1,7 @@
 // Package report: terminal timeline, summary and schedule files.
 export {
   describeFindings,
+  describeShrink,
   formatSummary,
   formatTimeline,
   readSchedule,

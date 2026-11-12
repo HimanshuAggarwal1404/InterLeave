@@ -74,6 +74,7 @@ function record(name: string, check: string, s: ExploreSummary): void {
     resetsPerSecond: s.resetSeconds > 0 ? round(s.runs / s.resetSeconds) : null,
     firstFindingAfterRuns: s.firstFindingAfterRuns ?? null,
     firstFindingAfterSeconds: s.firstFindingAfterSeconds === undefined ? null : round(s.firstFindingAfterSeconds),
+    shrunk: s.findings[0]?.shrunk ?? null, // switches before/after and extra runs (D-033)
   };
 }
 

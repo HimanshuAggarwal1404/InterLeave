@@ -6,7 +6,7 @@ import { PgProxy, splitHostPort } from '../proxy/index.ts';
 import { fireRequests } from '../harness/index.ts';
 import { SerialOracle, checkInvariants, serialOrders, snapshot, type Outcome } from '../oracle/index.ts';
 import { AdminDb } from '../reset/index.ts';
-import { Exhaustive, PctStrategy, RandomStrategy, replayChooser } from '../explore/index.ts';
+import { Exhaustive, PctStrategy, RandomStrategy, replayChooser, shrink, switches } from '../explore/index.ts';
 import { RunScheduler, type Chooser } from '../sched/run.ts';
 import type { Scenario } from '../scenario/index.ts';
 import type { ExploreSummary, FindingKind, RunResult, Strategy } from './types.ts';
@@ -33,6 +33,7 @@ export type ExploreOptions = TimingOptions & {
   depth?: number; // pct: the number of preemptions it aims for, minus one change point each (default 2)
   maxRuns: number;
   all: boolean; // keep going after a finding and report every distinct one (FR-16)
+  shrink?: boolean; // default true: simplify each finding to fewer switches (D-033)
   signal?: AbortSignal; // Ctrl+C: stop after the current run
   onRun?: (result: RunResult) => void; // progress
 };
@@ -154,11 +155,16 @@ export class Engine {
           const signature = findingSignature(result);
           if (!seen.has(signature)) {
             seen.add(signature);
-            summary.findings.push(result);
             if (summary.firstFindingAfterRuns === undefined) {
               summary.firstFindingAfterRuns = summary.runs;
               summary.firstFindingAfterSeconds = (performance.now() - started) / 1000;
             }
+            let reported = result;
+            if (opts.shrink !== false) {
+              reported = await this.#shrinkFinding(scenario, admin, result, opts, oracle);
+              summary.shrinkRuns = (summary.shrinkRuns ?? 0) + (reported.shrunk?.attempts ?? 0);
+            }
+            summary.findings.push(reported);
           }
           if (!opts.all) {
             break;
@@ -187,6 +193,37 @@ export class Engine {
     } finally {
       await admin.close();
     }
+  }
+
+  // #shrinkFinding simplifies a finding (D-033): the shrinker proposes orders
+  // with fewer switches, each is really run, and one counts only if it shows
+  // the same bug (same finding kinds and broken invariants). Returns the run
+  // with the fewest switches, with shrunk set.
+  async #shrinkFinding(
+    scenario: Scenario,
+    admin: AdminDb,
+    found: RunResult,
+    opts: TimingOptions,
+    oracle: SerialOracle | undefined,
+  ): Promise<RunResult> {
+    const signature = findingSignature(found);
+    const original = found.trace.decisions.map((d) => d.chosen);
+    let best = found;
+    const { choices, attempts } = await shrink(original, async (choose) => {
+      const r = await this.#runOnce(scenario, admin, choose, found.index, opts, oracle);
+      if (r.outcome !== 'complete' || findingSignature(r) !== signature) {
+        return undefined;
+      }
+      const tried = r.trace.decisions.map((d) => d.chosen);
+      if (switches(tried) < switches(best.trace.decisions.map((d) => d.chosen))) {
+        best = r;
+      }
+      return r.trace.decisions;
+    });
+    return {
+      ...best,
+      shrunk: { fromRun: found.index, fromSwitches: switches(original), toSwitches: switches(choices), attempts },
+    };
   }
 
   // #serialOracle runs the requests one at a time in every order (D-031) and
