@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Chooser, Decision } from '../sched/run.ts';
-import { Exhaustive, NonDeterminismError, PctStrategy, RandomStrategy, replayChooser } from './index.ts';
+import { Exhaustive, NonDeterminismError, PctStrategy, RandomStrategy, replayChooser, segmentChooser, segments, shrink, switches } from './index.ts';
 
 // simulate plays one run of a tiny model app without a database: each
 // request has a list of statements, every request with statements left is
@@ -156,4 +156,57 @@ test('PctFindsADepth2BugAsOftenAsPromised', () => {
   const random = hitRate(new RandomStrategy(1), 4000);
   assert.ok(pct >= 0.8 / 22, `PCT hit the bug in ${(pct * 100).toFixed(1)}% of runs, far below the 1/22 bound`);
   assert.ok(pct > 5 * random, `PCT ${(pct * 100).toFixed(1)}% vs random ${(random * 100).toFixed(2)}%: want PCT far ahead`);
+});
+
+// The shrinker (D-033). A finding's choices as segments: runs of one request.
+test('SegmentsAndSwitches', () => {
+  assert.deepEqual(segments(['A', 'A', 'B', 'A', 'A', 'A']), [
+    { tag: 'A', length: 2 },
+    { tag: 'B', length: 1 },
+    { tag: 'A', length: 3 },
+  ]);
+  assert.equal(switches(['A', 'A', 'B', 'A', 'A', 'A']), 2);
+  assert.equal(switches([]), 0);
+});
+
+test('SegmentChooserNeverThrows', () => {
+  // Segments that do not fit the app (B gets more turns than it has
+  // statements, C does not exist) are followed as far as they can be.
+  const { order } = simulate(segmentChooser([{ tag: 'B', length: 20 }, { tag: 'C', length: 1 }, { tag: 'A', length: 1 }]), LEDGER);
+  assert.equal(order, 'B1 B2 B3 B4 B5 B6 B7 B8 B9 Ar Aw');
+  // After the last segment it keeps running the same request as long as it can.
+  assert.equal(simulate(segmentChooser([{ tag: 'A', length: 1 }]), LEDGER).order, 'Ar Aw B1 B2 B3 B4 B5 B6 B7 B8 B9');
+});
+
+test('ShrinkRemovesNeedlessSwitches', async () => {
+  // The real ledger condition (looser than LEDGER's): A reads before B
+  // commits, and writes after B's update. Many noisy orders show it, but 2
+  // switches are enough (A begins and reads, all of B, A writes and commits).
+  const model = { A: ['b', 'r', 'w', 'c'], B: ['b', '1', '2', '3', '4', '5', '6', 'u', 'c'] };
+  const bug = (order: string) => {
+    const at = (s: string) => order.split(' ').indexOf(s);
+    return at('Ar') < at('Bc') && at('Aw') > at('Bu');
+  };
+  let tried = 0;
+  const attempt = async (choose: Chooser) => {
+    tried++;
+    const { order, decisions } = simulate(choose, model);
+    return bug(order) ? decisions : undefined;
+  };
+  const r = new RandomStrategy(5);
+  let found: string[] | undefined;
+  for (let i = 0; i < 5000 && found === undefined; i++) {
+    const { order, decisions } = simulate(r.nextChooser(), model);
+    if (bug(order) && switches(decisions.map((d) => d.chosen)) > 4) {
+      found = decisions.map((d) => d.chosen);
+    }
+  }
+  assert.ok(found !== undefined, 'random never produced a noisy finding to shrink');
+  const shrunk = await shrink(found, attempt);
+  assert.equal(switches(shrunk.choices), 2, `still ${switches(shrunk.choices)} switches: ${shrunk.choices.join('')}`);
+  assert.ok(bug(simulate(replayChooser(shrunk.choices), model).order), 'the shrunk schedule must still be a finding');
+  assert.equal(shrunk.attempts, tried);
+  // Nothing to remove: a minimal finding comes back unchanged, after trying.
+  const again = await shrink(shrunk.choices, attempt);
+  assert.deepEqual(again.choices, shrunk.choices);
 });

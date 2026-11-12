@@ -451,3 +451,19 @@ Alternatives: keep only random/exhaustive (no measurable difference on the exist
 make existing victims harder (would change Phase 2's numbers).
 Consequences: PCT gives a per-run probability bound (>= 1/(n * k^(d-1))) for bugs of depth d; on a
 model of the ledger race it hits 4.6% of runs vs random's 0.17%.
+
+## D-033: Shrink every finding to fewer switches (greedy segment removal), on by default
+Status: Accepted      Date: 2026-11-13
+Context: Random and PCT findings can switch between requests many times; only a few switches
+matter for the bug, and the rest make the timeline hard to read.
+Decision: a finding's choices are read as segments (runs of one request). The shrinker repeatedly
+tries removing one segment (its statements then run in that request's next segment, via a lenient
+chooser that never throws) and keeps a candidate only if a real run of it shows the same bug (same
+finding kinds and broken invariants) with fewer switches; it stops when no single removal works.
+On by default (`--no-shrink` skips it); only the shrunk schedule is saved, and the report says how
+many switches were removed and how many extra runs it took.
+Alternatives: opt-in `--shrink` (most users would never see the simpler order); saving both
+schedules (clutter); full delta debugging over individual choices (more runs, and most single-choice
+edits make the app diverge).
+Consequences: a few extra runs per finding; simpler, still replayable timelines. Greedy, so it
+finds a local minimum, not always the global one.
