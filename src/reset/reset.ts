@@ -43,6 +43,18 @@ export class AdminDb {
     return performance.now() - started;
   }
 
+  // blockingPids asks Postgres which backends block the one with this PID,
+  // i.e. hold a lock it is waiting for ([] = it is not waiting for a lock).
+  // Lock-wait detection polls it while a statement runs (D-030); the admin
+  // connection is idle during a run, so it is free for this.
+  async blockingPids(pid: number): Promise<number[]> {
+    if (!Number.isSafeInteger(pid)) {
+      throw new Error(`not a backend PID: ${pid}`);
+    }
+    const res = await this.client.query<{ pids: number[] }>(`SELECT pg_blocking_pids(${pid}) AS pids`);
+    return res.rows[0]?.pids ?? [];
+  }
+
   async close(): Promise<void> {
     await this.client.end();
   }

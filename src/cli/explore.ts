@@ -11,7 +11,8 @@ import { lineReader } from './lines.ts';
 
 export const runUsage = `  interleave run <scenario.yaml> [--strategy exhaustive|random] [--max-runs 1000] [--seed 1]
                  [--all] [--out .interleave] [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432]
-                 [--lock-wait 200ms] [--quiet 50ms] [--run-timeout 10s]
+                 [--lock-detect pg|timeout] [--lock-poll 10ms] [--lock-wait 200ms]
+                 [--quiet 50ms] [--run-timeout 10s]
       try orders of the scenario's requests until an invariant breaks; the app must
       already run with its database URL pointed at --listen
   interleave replay <schedule.json> [--step] [--listen ...] [--upstream ...]
@@ -21,13 +22,21 @@ export const runUsage = `  interleave run <scenario.yaml> [--strategy exhaustive
 const commonOptions = {
   listen: { type: 'string', default: '127.0.0.1:6433' },
   upstream: { type: 'string', default: '127.0.0.1:5432' },
+  'lock-detect': { type: 'string', default: 'pg' },
+  'lock-poll': { type: 'string', default: '10ms' },
   'lock-wait': { type: 'string', default: '200ms' },
   quiet: { type: 'string', default: '50ms' },
   'run-timeout': { type: 'string', default: '10s' },
 } as const;
 
-function timing(values: { 'lock-wait': string; quiet: string; 'run-timeout': string }): TimingOptions {
+function timing(values: { 'lock-detect': string; 'lock-poll': string; 'lock-wait': string; quiet: string; 'run-timeout': string }): TimingOptions {
+  const lockDetect = values['lock-detect'];
+  if (lockDetect !== 'pg' && lockDetect !== 'timeout') {
+    throw new Error('--lock-detect must be pg or timeout');
+  }
   return {
+    lockDetect,
+    lockPollMs: parseDuration(values['lock-poll']),
     lockWaitMs: parseDuration(values['lock-wait']),
     quietMs: parseDuration(values.quiet),
     runTimeoutMs: parseDuration(values['run-timeout']),

@@ -65,6 +65,34 @@ test('FixedIsCleanInEveryOrder', async (t) => {
   t.diagnostic(`fixed: all ${summary.runs} orders checked in ${summary.seconds.toFixed(1)}s`);
 });
 
+// D-030: with lock detection by Postgres (the default), a statement that
+// waits for the other request's row lock is seen as blocked by asking
+// pg_blocking_pids, which also names the request holding the lock. The
+// old timeout mode must still explore every order cleanly.
+test('LockWaitsComeFromPostgres', async (t) => {
+  const s = await setup(t, true);
+  if (!s) return;
+  const blocked: string[] = [];
+  const summary = await s.engine.explore(s.scenario, {
+    ...options,
+    onRun: (r) => {
+      for (const st of r.trace.steps.filter((st) => st.blocked)) {
+        blocked.push(`${st.tag} by ${(st.blockedBy ?? []).join(',')}`);
+      }
+    },
+  });
+  assert.equal(summary.error, undefined, summary.error);
+  assert.ok(summary.complete);
+  assert.ok(blocked.length > 0, "some order must make one request wait for the other one's row lock");
+  assert.deepEqual([...new Set(blocked)].sort(), ['A by B', 'B by A']);
+
+  const old = await s.engine.explore(s.scenario, { ...options, lockDetect: 'timeout' });
+  assert.equal(old.error, undefined, old.error);
+  assert.ok(old.complete);
+  assert.deepEqual(old.findings, []);
+  t.diagnostic(`fixed, ${summary.runs} orders: pg ${summary.seconds.toFixed(1)}s, timeout ${old.seconds.toFixed(1)}s`);
+});
+
 test('RandomFindsItToo', async (t) => {
   const s = await setup(t, false);
   if (!s) return;

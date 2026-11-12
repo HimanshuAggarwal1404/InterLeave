@@ -90,4 +90,7 @@ test('UsageErrorsExit2', async () => {
   assert.match(missing.err, /cannot read scenario/);
   const noArg = await interleave(['replay']);
   assert.equal(noArg.code, 2);
+  const badDetect = await interleave(['run', 'victims/coupon/scenario.yaml', '--lock-detect', 'guess']);
+  assert.equal(badDetect.code, 2);
+  assert.match(badDetect.err, /--lock-detect must be pg or timeout/);
 });

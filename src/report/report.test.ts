@@ -53,6 +53,7 @@ test('StepSummary', () => {
   assert.equal(stepSummary({ tag: 'A', sql: 'x', status: 'T', result: { command: 'BEGIN' }, blocked: false }), '');
   assert.equal(stepSummary({ tag: 'A', sql: 'x', status: 'E', result: { error: { code: '40P01', message: 'deadlock detected' } }, blocked: true }), '✗ 40P01 deadlock detected (waited for a lock)');
   assert.equal(stepSummary({ tag: 'A', sql: 'x', blocked: false }), '(no reply)');
+  assert.equal(stepSummary({ tag: 'B', sql: 'x', status: 'T', result: { command: 'SELECT 1', firstValue: '0' }, blocked: true, blockedBy: ['A'] }), "→ 0 (waited for A's lock)");
 });
 
 test('TimelineShowsOneColumnPerRequest', () => {

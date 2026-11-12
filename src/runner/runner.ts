@@ -11,9 +11,16 @@ import { RunScheduler, type Chooser } from '../sched/run.ts';
 import type { Scenario } from '../scenario/index.ts';
 import type { ExploreSummary, FindingKind, RunResult, Strategy } from './types.ts';
 
+// LockDetect: how a statement waiting for a lock is noticed (D-030).
+//   pg       ask Postgres (pg_blocking_pids) every lockPollMs: exact
+//   timeout  no reply within lockWaitMs counts as blocked (D-007, the MVP way)
+export type LockDetect = 'pg' | 'timeout';
+
 export type TimingOptions = {
   quietMs: number; // FR-10, default 50
-  lockWaitMs: number; // FR-11, default 200
+  lockWaitMs: number; // FR-11, default 200 (timeout mode, and the fallback without a PID)
+  lockDetect?: LockDetect; // default 'pg'
+  lockPollMs?: number; // default 10
   runTimeoutMs: number; // FR-12, default 10 s
   startGraceMs?: number; // how long a request's first statement may delay a decision; default 1 s
 };
@@ -45,7 +52,7 @@ export class Engine {
     this.#server = server;
     const a = server.address() as net.AddressInfo;
     this.#address = a.family === 'IPv6' ? `[${a.address}]:${a.port}` : `${a.address}:${a.port}`;
-    proxy.onQuery = (signal, tag, sql) => this.#current?.onQuery(signal, tag, sql);
+    proxy.onQuery = (signal, tag, sql, pid) => this.#current?.onQuery(signal, tag, sql, pid);
     this.#served = proxy.serve(server, this.#stop.signal);
   }
 
@@ -181,6 +188,8 @@ export class Engine {
       quietMs: opts.quietMs,
       lockWaitMs: opts.lockWaitMs,
       ...(opts.startGraceMs === undefined ? {} : { startGraceMs: opts.startGraceMs }),
+      ...(opts.lockDetect === 'timeout' ? {} : { probeBlocked: (pid: number) => admin.blockingPids(pid) }),
+      ...(opts.lockPollMs === undefined ? {} : { lockPollMs: opts.lockPollMs }),
       ...(opts.beforeRelease === undefined ? {} : { beforeRelease: opts.beforeRelease }),
     });
     this.#current = sched;

@@ -28,7 +28,8 @@ export function stepSummary(step: ExecutedStep): string {
     parts.push(`→ ${step.result.command}`);
   }
   if (step.blocked) {
-    parts.push('(waited for a lock)');
+    const by = step.blockedBy ?? [];
+    parts.push(by.length === 0 ? '(waited for a lock)' : `(waited for ${by.join(' and ')}'s lock)`);
   }
   return parts.join(' ');
 }
