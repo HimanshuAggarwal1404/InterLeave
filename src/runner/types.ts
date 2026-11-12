@@ -28,9 +28,11 @@ export type SerialCheck = {
 //   timeout   the run timeout fired first (FR-12: reported, not a violation)
 //   error     the run could not be judged (e.g. the app behaved differently
 //             from the recorded schedule it was replaying)
+//   pruned    partial-order reduction cut it short: the rest could only repeat
+//             orders already explored (D-034); not judged
 export type RunResult = {
   index: number; // 1-based run number
-  outcome: 'complete' | 'timeout' | 'error';
+  outcome: 'complete' | 'timeout' | 'error' | 'pruned';
   error?: string;
   trace: RunTrace;
   responses: Response[];
@@ -61,6 +63,8 @@ export type ExploreSummary = {
   resetSeconds: number; // total time spent resetting
   serialOrders?: number; // one-at-a-time orders run first for the serial oracle
   shrinkRuns?: number; // extra runs made by the shrinker (not counted in runs)
+  por?: boolean; // partial-order reduction was on (D-034)
+  pruned?: number; // runs cut short by it (counted in runs)
   firstFindingAfterRuns?: number;
   firstFindingAfterSeconds?: number;
 };

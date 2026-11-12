@@ -123,7 +123,11 @@ export function formatSummary(s: ExploreSummary): string {
   } else if (s.interrupted) {
     lines.push(`Interrupted after ${s.runs} runs: no violation so far.`);
   } else if (s.strategy === 'exhaustive' && s.complete) {
-    lines.push(`No violation. Complete: all ${s.runs} orders checked (exhaustive).`);
+    lines.push(
+      s.por === true
+        ? `No violation. Complete: every order checked (exhaustive with partial-order reduction: ${s.runs} runs, ${s.pruned ?? 0} of them cut short as already covered).`
+        : `No violation. Complete: all ${s.runs} orders checked (exhaustive).`,
+    );
   } else if (s.strategy === 'exhaustive') {
     lines.push(`No violation in ${s.runs} orders, but stopped at --max-runs ${s.maxRuns}: more orders remain.`);
   } else {

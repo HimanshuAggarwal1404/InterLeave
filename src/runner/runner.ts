@@ -6,7 +6,7 @@ import { PgProxy, splitHostPort } from '../proxy/index.ts';
 import { fireRequests } from '../harness/index.ts';
 import { SerialOracle, checkInvariants, serialOrders, snapshot, type Outcome } from '../oracle/index.ts';
 import { AdminDb } from '../reset/index.ts';
-import { Exhaustive, PctStrategy, RandomStrategy, replayChooser, shrink, switches } from '../explore/index.ts';
+import { Exhaustive, PctStrategy, PrunedRun, RandomStrategy, replayChooser, shrink, switches } from '../explore/index.ts';
 import { RunScheduler, type Chooser } from '../sched/run.ts';
 import type { Scenario } from '../scenario/index.ts';
 import type { ExploreSummary, FindingKind, RunResult, Strategy } from './types.ts';
@@ -34,6 +34,7 @@ export type ExploreOptions = TimingOptions & {
   maxRuns: number;
   all: boolean; // keep going after a finding and report every distinct one (FR-16)
   shrink?: boolean; // default true: simplify each finding to fewer switches (D-033)
+  por?: boolean; // exhaustive only: partial-order reduction with sleep sets (D-034)
   signal?: AbortSignal; // Ctrl+C: stop after the current run
   onRun?: (result: RunResult) => void; // progress
 };
@@ -103,7 +104,11 @@ export class Engine {
       resetSeconds: 0,
     };
     const started = performance.now();
-    const exhaustive = opts.strategy === 'exhaustive' ? new Exhaustive() : undefined;
+    const exhaustive = opts.strategy === 'exhaustive' ? new Exhaustive({ reduce: opts.por === true }) : undefined;
+    if (exhaustive !== undefined && opts.por === true) {
+      summary.por = true;
+      summary.pruned = 0;
+    }
     const random =
       opts.strategy === 'random' ? new RandomStrategy(opts.seed) : opts.strategy === 'pct' ? new PctStrategy(opts.seed, opts.depth ?? 2) : undefined;
     const seen = new Set<string>(); // finding signatures already reported
@@ -136,6 +141,10 @@ export class Engine {
           random.record(result.trace.decisions);
         }
         opts.onRun?.(result);
+        if (result.outcome === 'pruned') {
+          summary.pruned = (summary.pruned ?? 0) + 1;
+          continue;
+        }
         if (result.outcome === 'error') {
           summary.error = result.error;
           break;
@@ -289,6 +298,11 @@ export class Engine {
       // timeout the scheduler lets every parked statement go, so the requests
       // finish too; waiting for them keeps runs from overlapping (D-005).
       const [trace, resps] = await Promise.all([run, responses]);
+      if (trace.outcome === 'error' && trace.reason instanceof PrunedRun) {
+        // Cut short by partial-order reduction: the requests finished
+        // unscheduled, so the state means nothing; do not judge it.
+        return { index, outcome: 'pruned', trace, responses: resps, invariants: [], findings: [], resetMs, ms: performance.now() - started };
+      }
       const invariants = await checkInvariants(admin.client, scenario.invariants);
       const findings: FindingKind[] = [];
       if (invariants.some((i) => !i.ok && i.error === undefined)) {

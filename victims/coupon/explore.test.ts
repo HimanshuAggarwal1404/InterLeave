@@ -128,6 +128,27 @@ test('SerialOracleNeedsNoInvariants', async (t) => {
   }
 });
 
+// D-034: partial-order reduction explores fewer orders with the same verdicts.
+test('ReductionKeepsTheVerdicts', async (t) => {
+  for (const fixed of [false, true]) {
+    await t.test(fixed ? 'fixed' : 'buggy', async (t) => {
+      const s = await setup(t, fixed);
+      if (!s) return;
+      const full = await s.engine.explore(s.scenario, { ...options, all: true });
+      const reduced = await s.engine.explore(s.scenario, { ...options, all: true, por: true });
+      assert.equal(reduced.error, undefined, reduced.error);
+      assert.ok(reduced.complete, 'reduced exploration must still finish');
+      assert.deepEqual(
+        reduced.findings.map((f) => f.findings.join('+')),
+        full.findings.map((f) => f.findings.join('+')),
+        'the same distinct findings',
+      );
+      assert.ok(reduced.runs < full.runs, `no saving: ${reduced.runs} runs vs ${full.runs}`);
+      t.diagnostic(`${fixed ? 'fixed' : 'buggy'}: ${full.runs} orders without reduction, ${reduced.runs} with (${reduced.pruned ?? 0} cut short)`);
+    });
+  }
+});
+
 test('PctFindsItToo', async (t) => {
   const s = await setup(t, false);
   if (!s) return;

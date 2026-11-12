@@ -17,7 +17,8 @@
     "coupon": "node victims/coupon/main.ts",
     "bench": "node src/bench/main.ts",
     "test:acceptance": "node --test --test-timeout=600000 --test-concurrency=1 victims/acceptance.e2e.ts",
-    "compare": "node scripts/compare-strategies.ts"
+    "compare": "node scripts/compare-strategies.ts",
+    "measure:por": "node scripts/measure-por.ts"
   },
   "dependencies": {
     "pg": "^8.23.1",

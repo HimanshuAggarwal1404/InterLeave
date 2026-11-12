@@ -10,7 +10,7 @@ import { EXIT_FOUND, EXIT_INTERNAL, EXIT_OK, EXIT_USAGE } from './exit.ts';
 import { lineReader } from './lines.ts';
 
 export const runUsage = `  interleave run <scenario.yaml> [--strategy exhaustive|random|pct] [--depth 2] [--max-runs 1000] [--seed 1]
-                 [--all] [--no-shrink] [--out .interleave] [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432]
+                 [--all] [--no-shrink] [--por] [--out .interleave] [--listen 127.0.0.1:6433] [--upstream 127.0.0.1:5432]
                  [--lock-detect pg|timeout] [--lock-poll 10ms] [--lock-wait 200ms]
                  [--quiet 50ms] [--run-timeout 10s]
       try orders of the scenario's requests until an invariant breaks; the app must
@@ -59,6 +59,7 @@ export async function runExplore(args: string[], signal?: AbortSignal): Promise<
         seed: { type: 'string', default: '1' },
         all: { type: 'boolean', default: false },
         'no-shrink': { type: 'boolean', default: false },
+        por: { type: 'boolean', default: false },
         out: { type: 'string', default: '.interleave' },
       },
     });
@@ -111,6 +112,7 @@ export async function runExplore(args: string[], signal?: AbortSignal): Promise<
         maxRuns,
         all: values.all,
         shrink: !values['no-shrink'],
+        por: values.por,
         signal: stop.signal,
         onRun: (r) => progress(r),
       });
