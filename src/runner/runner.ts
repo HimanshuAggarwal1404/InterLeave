@@ -4,7 +4,7 @@
 import net from 'node:net';
 import { PgProxy, splitHostPort } from '../proxy/index.ts';
 import { fireRequests } from '../harness/index.ts';
-import { checkInvariants } from '../oracle/index.ts';
+import { SerialOracle, checkInvariants, serialOrders, snapshot, type Outcome } from '../oracle/index.ts';
 import { AdminDb } from '../reset/index.ts';
 import { Exhaustive, RandomStrategy, replayChooser } from '../explore/index.ts';
 import { RunScheduler, type Chooser } from '../sched/run.ts';
@@ -105,6 +105,16 @@ export class Engine {
     const seen = new Set<string>(); // finding signatures already reported
     const admin = await AdminDb.connect(scenario.adminDsn);
     try {
+      let oracle: SerialOracle | undefined;
+      try {
+        oracle = await this.#serialOracle(scenario, admin);
+      } catch (err) {
+        summary.error = (err as Error).message;
+        return summary;
+      }
+      if (oracle !== undefined) {
+        summary.serialOrders = oracle.outcomes.length;
+      }
       while (summary.runs < opts.maxRuns) {
         if (opts.signal?.aborted) {
           summary.interrupted = true;
@@ -114,7 +124,7 @@ export class Engine {
         if (chooser === undefined) {
           break; // exhaustive: every order explored
         }
-        const result = await this.#runOnce(scenario, admin, chooser, summary.runs + 1, opts);
+        const result = await this.#runOnce(scenario, admin, chooser, summary.runs + 1, opts, oracle);
         summary.runs++;
         summary.resetSeconds += result.resetMs / 1000;
         exhaustive?.record(result.trace.decisions);
@@ -166,10 +176,40 @@ export class Engine {
   ): Promise<RunResult> {
     const admin = await AdminDb.connect(scenario.adminDsn);
     try {
-      return await this.#runOnce(scenario, admin, replayChooser(choices), 1, opts);
+      const oracle = await this.#serialOracle(scenario, admin);
+      return await this.#runOnce(scenario, admin, replayChooser(choices), 1, opts, oracle);
     } finally {
       await admin.close();
     }
+  }
+
+  // #serialOracle runs the requests one at a time in every order (D-031) and
+  // records each outcome; undefined if the scenario has no serial section.
+  // Nothing is scheduled meanwhile (#current is unset), and each request is
+  // fired only after the previous one answered, so these runs really are
+  // serial.
+  async #serialOracle(scenario: Scenario, admin: AdminDb): Promise<SerialOracle | undefined> {
+    if (scenario.serial === undefined) {
+      return undefined;
+    }
+    const oracle = new SerialOracle();
+    for (const order of serialOrders(scenario.requests.map((r) => r.tag))) {
+      await admin.reset(scenario.resetSql);
+      const statuses: Record<string, number> = {};
+      for (const tag of order) {
+        const request = scenario.requests.find((r) => r.tag === tag);
+        if (request === undefined) {
+          continue;
+        }
+        const [res] = await fireRequests(scenario.baseUrl, [request]);
+        if (res.error !== undefined) {
+          throw new Error(`serial run ${order.join(' then ')}: request ${tag} failed: ${res.error}`);
+        }
+        statuses[tag] = res.status;
+      }
+      oracle.record(order, { tables: await snapshot(admin.client, scenario.serial), statuses });
+    }
+    return oracle;
   }
 
   // #runOnce: reset, fire, schedule, judge.
@@ -179,6 +219,7 @@ export class Engine {
     choose: Chooser,
     index: number,
     opts: TimingOptions & { beforeRelease?: (step: { tag: string; sql: string }) => Promise<void> },
+    oracle?: SerialOracle,
   ): Promise<RunResult> {
     const started = performance.now();
     const resetMs = await admin.reset(scenario.resetSql);
@@ -213,18 +254,41 @@ export class Engine {
       if (trace.steps.some((s) => s.result?.error?.code === '40P01')) {
         findings.push('deadlock');
       }
-      const outcome = trace.outcome === 'complete' ? 'complete' : trace.outcome === 'aborted' ? 'timeout' : 'error';
+      let serial: RunResult['serial'];
+      let serialError: string | undefined;
+      // Only a completed run is judged: a timed-out one stopped halfway
+      // (FR-12: a timeout is reported, not a violation).
+      if (oracle !== undefined && scenario.serial !== undefined && trace.outcome === 'complete') {
+        try {
+          const now: Outcome = {
+            tables: await snapshot(admin.client, scenario.serial),
+            statuses: Object.fromEntries(resps.map((r) => [r.tag, r.status])),
+          };
+          const matched = oracle.match(now);
+          serial = { outcome: now, ...(matched === undefined ? {} : { matched }), serialOutcomes: oracle.outcomes };
+          if (matched === undefined) {
+            findings.push('serial');
+          }
+        } catch (err) {
+          serialError = (err as Error).message;
+        }
+      }
+      const outcome =
+        serialError !== undefined ? 'error' : trace.outcome === 'complete' ? 'complete' : trace.outcome === 'aborted' ? 'timeout' : 'error';
       const result: RunResult = {
         index,
         outcome,
         trace,
         responses: resps,
         invariants,
+        ...(serial === undefined ? {} : { serial }),
         findings,
         resetMs,
         ms: performance.now() - started,
       };
-      if (outcome === 'error') {
+      if (serialError !== undefined) {
+        result.error = serialError;
+      } else if (outcome === 'error') {
         result.error = trace.reason instanceof Error ? trace.reason.message : String(trace.reason);
       }
       return result;

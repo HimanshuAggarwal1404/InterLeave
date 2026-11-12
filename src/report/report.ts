@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type { ScenarioRequest } from '../scenario/index.ts';
 import type { Decision, ExecutedStep } from '../sched/run.ts';
+import type { Outcome } from '../oracle/index.ts';
 import type { ExploreSummary, RunResult, Strategy } from '../runner/types.ts';
 
 // stripTag removes the leading /* il:req=X */ comment and collapses whitespace.
@@ -62,7 +63,25 @@ export function formatTimeline(result: RunResult, requests: readonly ScenarioReq
   for (const inv of result.invariants) {
     lines.push(inv.ok ? `✓ ${inv.name}` : `✗ ${inv.name} (got ${inv.error === undefined ? inv.value : `error: ${inv.error}`})`);
   }
+  if (result.serial !== undefined) {
+    lines.push(...formatSerial(result.serial));
+  }
   return lines.join('\n');
+}
+
+// formatSerial shows the serial oracle's verdict: on a race, this run's
+// outcome next to what each one-at-a-time order gives.
+function formatSerial(check: NonNullable<RunResult['serial']>): string[] {
+  if (check.matched !== undefined) {
+    return [`✓ same result as running them one at a time (${check.matched.join(' then ')})`];
+  }
+  const show = (o: Outcome) =>
+    [...Object.entries(o.tables).map(([t, rows]) => `${t} ${JSON.stringify(rows)}`), Object.entries(o.statuses).map(([tag, st]) => `${tag} ${st}`).join(', ')].join(' · ');
+  return [
+    '✗ the result matches no one-at-a-time order:',
+    `    this run:        ${show(check.outcome)}`,
+    ...check.serialOutcomes.map(({ order, outcome }) => `    ${`${order.join(' then ')}:`.padEnd(16)} ${show(outcome)}`),
+  ];
 }
 
 // describeFindings says in words what a run found.
@@ -74,6 +93,9 @@ export function describeFindings(result: RunResult): string {
   }
   if (result.findings.includes('deadlock')) {
     parts.push('Postgres detected a deadlock (40P01)');
+  }
+  if (result.findings.includes('serial')) {
+    parts.push('the result matches no one-at-a-time order');
   }
   return parts.join('; ');
 }

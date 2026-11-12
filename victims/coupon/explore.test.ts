@@ -93,6 +93,41 @@ test('LockWaitsComeFromPostgres', async (t) => {
   t.diagnostic(`fixed, ${summary.runs} orders: pg ${summary.seconds.toFixed(1)}s, timeout ${old.seconds.toFixed(1)}s`);
 });
 
+// D-031: with no invariants at all, the serial oracle alone finds the double
+// redeem (its result matches neither A-then-B nor B-then-A) and clears the fix.
+test('SerialOracleNeedsNoInvariants', async (t) => {
+  for (const fixed of [false, true]) {
+    await t.test(fixed ? 'fixed' : 'buggy', async (t) => {
+      const s = await setup(t, fixed);
+      if (!s) return;
+      const scenario = {
+        ...s.scenario,
+        invariants: [],
+        serial: [
+          { table: 'coupons', columns: ['code', 'uses'] },
+          { table: 'redemptions', columns: ['code', 'user_id'] },
+        ],
+      };
+      const summary = await s.engine.explore(scenario, options);
+      assert.equal(summary.error, undefined, summary.error);
+      if (fixed) {
+        assert.deepEqual(summary.findings, [], 'the fix must match a one-at-a-time order in every run');
+        assert.ok(summary.complete);
+        return;
+      }
+      assert.equal(summary.findings.length, 1, `no finding in ${summary.runs} runs`);
+      const found = summary.findings[0];
+      assert.deepEqual(found.findings, ['serial']);
+      assert.equal(found.serial?.matched, undefined);
+      assert.deepEqual(found.serial?.outcome.statuses, { A: 200, B: 200 });
+      t.diagnostic(formatTimeline(found, scenario.requests));
+      // The finding replays like any other.
+      const again: RunResult = await s.engine.replay(scenario, found.trace.decisions.map((d) => d.chosen), DEFAULT_TIMING);
+      assert.deepEqual(again.findings, ['serial']);
+    });
+  }
+});
+
 test('RandomFindsItToo', async (t) => {
   const s = await setup(t, false);
   if (!s) return;
