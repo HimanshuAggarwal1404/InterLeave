@@ -39,7 +39,9 @@ export type RunDoneFn = (status: ReadyStatus, result?: StepResult) => void;
 
 // Chooser picks the request to release from the runnable (parked) ones, given
 // in request order. The explorer supplies it: exhaustive, random or replay.
-export type Chooser = (runnable: readonly string[]) => string;
+// next maps each runnable request to the SQL of its parked statement
+// (partial-order reduction uses it, D-034; other choosers ignore it).
+export type Chooser = (runnable: readonly string[], next: ReadonlyMap<string, string>) => string;
 
 export type RequestState = 'running' | 'parked' | 'executing' | 'blocked' | 'finished';
 
@@ -262,7 +264,8 @@ export class RunScheduler {
 
     let chosen: string;
     try {
-      chosen = this.#choose(runnable);
+      const next = new Map(runnable.map((tag) => [tag, (this.#requests.get(tag) as Request).parked?.sql ?? '']));
+      chosen = this.#choose(runnable, next);
     } catch (err) {
       this.#end('error', err);
       return;

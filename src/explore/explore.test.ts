@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Chooser, Decision } from '../sched/run.ts';
-import { Exhaustive, NonDeterminismError, PctStrategy, RandomStrategy, replayChooser, segmentChooser, segments, shrink, switches } from './index.ts';
+import { Exhaustive, NonDeterminismError, PctStrategy, PrunedRun, RandomStrategy, replayChooser, segmentChooser, segments, shrink, switches } from './index.ts';
+import { access, independent } from './access.ts';
 
 // simulate plays one run of a tiny model app without a database: each
 // request has a list of statements, every request with statements left is
@@ -23,7 +24,7 @@ function simulate(
     if (runnable.length === 0) {
       return { order: ran.join(' '), decisions };
     }
-    const chosen = choose(runnable);
+    const chosen = choose(runnable, new Map(runnable.map((tag) => [tag, left[tag][0]])));
     decisions.push({ runnable, chosen });
     ran.push(`${chosen}${left[chosen].shift()}`);
     if (branch !== undefined) {
@@ -80,7 +81,7 @@ test('ExhaustiveDetectsNonDeterminism', () => {
   assert.ok(second);
   // The replayed prefix expects a choice that is no longer runnable: the app
   // behaved differently from the previous run.
-  assert.throws(() => second(['C']), NonDeterminismError);
+  assert.throws(() => second(['C'], new Map()), NonDeterminismError);
 });
 
 test('RandomIsReproducibleBySeed', () => {
@@ -209,4 +210,81 @@ test('ShrinkRemovesNeedlessSwitches', async () => {
   // Nothing to remove: a minimal finding comes back unchanged, after trying.
   const again = await shrink(shrunk.choices, attempt);
   assert.deepEqual(again.choices, shrunk.choices);
+});
+
+// Partial-order reduction (D-034). Two orders are equivalent when every pair
+// of conflicting statements (different requests, dependent per access.ts) ran
+// in the same relative order: the conflict signature below. Reduction may skip
+// runs, but never a signature.
+function conflictSignature(ran: Array<{ tag: string; i: number; sql: string }>): string {
+  const pairs: string[] = [];
+  for (let x = 0; x < ran.length; x++) {
+    for (let y = x + 1; y < ran.length; y++) {
+      const a = ran[x];
+      const b = ran[y];
+      if (a.tag !== b.tag && !independent(access(a.sql), access(b.sql))) {
+        pairs.push(`${a.tag}${a.i}<${b.tag}${b.i}`);
+      }
+    }
+  }
+  return pairs.sort().join(' ');
+}
+
+// exploreModel runs exhaustive search over a model of SQL statements and
+// returns how many runs completed, how many were cut short as redundant, and
+// the set of conflict signatures reached.
+function exploreModel(requests: Record<string, string[]>, reduce: boolean): { complete: number; pruned: number; signatures: Set<string> } {
+  const ex = new Exhaustive({ reduce });
+  const out = { complete: 0, pruned: 0, signatures: new Set<string>() };
+  for (let choose = ex.nextChooser(); choose !== undefined; choose = ex.nextChooser()) {
+    const left = Object.fromEntries(Object.entries(requests).map(([tag, sqls]) => [tag, sqls.map((sql, i) => ({ sql, i }))]));
+    const ran: Array<{ tag: string; i: number; sql: string }> = [];
+    const decisions: Decision[] = [];
+    let pruned = false;
+    for (;;) {
+      const runnable = Object.keys(left).filter((t) => left[t].length > 0).sort();
+      if (runnable.length === 0) break;
+      let chosen: string;
+      try {
+        chosen = choose(runnable, new Map(runnable.map((t) => [t, left[t][0].sql])));
+      } catch (err) {
+        assert.ok(err instanceof PrunedRun, String(err));
+        pruned = true;
+        break;
+      }
+      decisions.push({ runnable, chosen });
+      const step = left[chosen].shift() as { sql: string; i: number };
+      ran.push({ tag: chosen, ...step });
+    }
+    ex.record(decisions);
+    if (pruned) {
+      out.pruned++;
+    } else {
+      out.complete++;
+      out.signatures.add(conflictSignature(ran));
+    }
+    assert.ok(out.complete + out.pruned < 5000, 'exploration did not end');
+  }
+  return out;
+}
+
+test('ReductionKeepsEveryConflictOrder', () => {
+  // A checks and takes the last item; B writes an audit line, then reads the stock.
+  const model = {
+    A: ['BEGIN', 'SELECT stock FROM products', 'UPDATE products SET stock = 0', 'INSERT INTO orders (x) VALUES (1)', 'COMMIT'],
+    B: ['BEGIN', 'INSERT INTO audit (x) VALUES (1)', 'INSERT INTO audit (x) VALUES (2)', 'SELECT stock FROM products', 'COMMIT'],
+  };
+  const full = exploreModel(model, false);
+  const reduced = exploreModel(model, true);
+  assert.equal(full.pruned, 0);
+  assert.deepEqual([...reduced.signatures].sort(), [...full.signatures].sort(), 'reduction lost an inequivalent order');
+  assert.ok(reduced.complete + reduced.pruned < full.complete, `no saving: ${reduced.complete}+${reduced.pruned} vs ${full.complete}`);
+});
+
+test('ReductionSkipsNothingWhenEverythingConflicts', () => {
+  const model = { A: ['UPDATE t SET a = 1', 'UPDATE t SET a = 2'], B: ['UPDATE t SET a = 3', 'UPDATE t SET a = 4'] };
+  const full = exploreModel(model, false);
+  const reduced = exploreModel(model, true);
+  assert.equal(reduced.complete, full.complete);
+  assert.equal(reduced.pruned, 0);
 });
