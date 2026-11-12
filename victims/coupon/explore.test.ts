@@ -37,7 +37,7 @@ test('ExhaustiveFindsTheDoubleRedeem', async (t) => {
   assert.equal(summary.error, undefined, summary.error);
   assert.equal(summary.findings.length, 1, `want a finding; ran ${summary.runs} orders`);
   const found = summary.findings[0];
-  assert.deepEqual(found.findings, ['invariant']);
+  assert.deepEqual(found.findings, ['invariant', 'serial']);
   assert.deepEqual(
     found.responses.map((r) => r.status),
     [200, 200],
@@ -50,7 +50,7 @@ test('ExhaustiveFindsTheDoubleRedeem', async (t) => {
   for (let i = 1; i <= 3; i++) {
     const again: RunResult = await s.engine.replay(s.scenario, choices, DEFAULT_TIMING);
     assert.equal(again.outcome, 'complete', again.error);
-    assert.deepEqual(again.findings, ['invariant'], `replay ${i} did not reproduce the violation`);
+    assert.deepEqual(again.findings, ['invariant', 'serial'], `replay ${i} did not reproduce the violation`);
     assert.deepEqual(again.trace.decisions, found.trace.decisions, `replay ${i} took a different path`);
   }
 });
