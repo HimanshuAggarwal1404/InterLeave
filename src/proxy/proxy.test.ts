@@ -508,6 +508,29 @@ test('RealPostgres', async (t) => {
     ]);
   });
 
+  // The backend PID from BackendKeyData reaches onQuery: it is the PID that
+  // Postgres itself reports for the connection (lock-wait detection, D-030).
+  await t.test('backend PID (node-postgres)', async () => {
+    const pids: Array<number | undefined> = [];
+    const p = new PgProxy(upstream);
+    p.onQuery = (_signal, tag, _sql, pid) => {
+      if (tag !== '') {
+        pids.push(pid);
+      }
+      return undefined;
+    };
+    const viaHook = await serveProxy(t, p);
+    const client = new pg.Client({ connectionString: `postgres://interleave:interleave@${viaHook}/interleave?sslmode=disable` });
+    await client.connect();
+    let actual: number;
+    try {
+      actual = (await client.query<{ pid: number }>('/* il:req=A */ SELECT pg_backend_pid() AS pid')).rows[0].pid;
+    } finally {
+      await client.end();
+    }
+    assert.deepEqual(pids, [actual]);
+  });
+
   // pg has no "prefer" mode (it fails on our 'N'), so the SSLRequest path is
   // tested with psql, a real client that asks for SSL first and carries on
   // without it.

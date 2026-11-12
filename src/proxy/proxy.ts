@@ -6,6 +6,7 @@ import { once } from 'node:events';
 import {
   CANCEL_REQUEST_CODE,
   GSSENC_REQUEST_CODE,
+  backendKeyData,
   commandTag,
   errorFields,
   firstColumn,
@@ -41,6 +42,7 @@ export type OnQuery = (
   signal: AbortSignal,
   tag: string,
   sql: string,
+  pid: number | undefined,
 ) => Promise<DoneFn | undefined> | DoneFn | undefined;
 
 // PgProxy forwards client connections to one local Postgres server. (Not
@@ -50,8 +52,10 @@ export class PgProxy {
   readonly #port: number;
 
   // onQuery, if set, is called for every simple Query an app sends, before
-  // the query is forwarded, with its request tag ("" if untagged, D-015) and
-  // SQL text. Set it before serve().
+  // the query is forwarded, with its request tag ("" if untagged, D-015), its
+  // SQL text, and the backend process ID of the Postgres connection it goes to
+  // (from BackendKeyData; undefined if Postgres did not send one). Lock-wait
+  // detection uses the PID (D-030). Set it before serve().
   //
   // While the Promise it returns is pending, the query waits (it is parked):
   // the proxy reads nothing more from that app connection. signal aborts when
@@ -226,8 +230,17 @@ export class PgProxy {
         // The reply to the statement Postgres is working on, collected message
         // by message until its ReadyForQuery; then handed to done and reset.
         const reply: { result: StepResult } = { result: {} };
-        toServer.inspect = (m) => inspectQuery(onQuery, conn.signal, addr, m, pending);
-        toClient.observe = (m) => collectResult(addr, m, reply.result);
+        // Postgres sends BackendKeyData once, during startup, before the
+        // ReadyForQuery that lets the app send its first query.
+        const backend: { pid?: number } = {};
+        toServer.inspect = (m) => inspectQuery(onQuery, conn.signal, addr, m, pending, backend.pid);
+        toClient.observe = (m) => {
+          if (m.type === 'K') {
+            recordBackend(addr, m, backend);
+          } else {
+            collectResult(addr, m, reply.result);
+          }
+        };
         toClient.sentReady = (m) => {
           const result = reply.result;
           reply.result = {};
@@ -287,6 +300,7 @@ async function inspectQuery(
   addr: string,
   m: Message,
   pending: Array<DoneFn | undefined>,
+  pid: number | undefined,
 ): Promise<void> {
   if (m.type === 'S' || m.type === 'F') {
     // A Sync (extended protocol) or FunctionCall also gets exactly one
@@ -313,7 +327,7 @@ async function inspectQuery(
       log(`proxy: ${addr}: ${errorMessage(err)} (treated as untagged)`);
     }
     try {
-      done = await onQuery(signal, tag, sql);
+      done = await onQuery(signal, tag, sql, pid);
     } catch (err) {
       if (signal.aborted) {
         throw err; // the connection is going away; forward stops here
@@ -325,6 +339,16 @@ async function inspectQuery(
   // skipping it would pair every later reply with the wrong query. This runs
   // before the Query is forwarded, so its reply cannot come back first.
   pending.push(done);
+}
+
+// recordBackend keeps the connection's backend PID from BackendKeyData. A
+// malformed message is logged; the connection then has no PID.
+function recordBackend(addr: string, m: Message, backend: { pid?: number }): void {
+  try {
+    backend.pid = backendKeyData(m).pid;
+  } catch (err) {
+    log(`proxy: ${addr}: ${errorMessage(err)}`);
+  }
 }
 
 // collectResult records what a reply message says about the statement being
