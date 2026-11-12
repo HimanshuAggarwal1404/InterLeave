@@ -501,3 +501,21 @@ whose seed data is large, where TRUNCATE + INSERT grows with the rows but a clon
 fixed.
 Consequences: Phase 3's reset item is closed with a measured negative result; the spike script
 stays so the numbers can be reproduced or rechecked on bigger seeds.
+
+## D-036: Schedule the extended query protocol: one step per Sync group, parked at its first Execute
+Status: Accepted      Date: 2026-11-12
+Context: Apps that pass values separately (node-postgres with a values array, every ORM) use the
+extended protocol (Parse, Bind, Describe, Execute, Sync); the MVP forwarded it unscheduled (D-003,
+FR-6), so Interleave could not find their races. Phase 4 starts here (Himanshu: "continue with the
+recommended").
+Decision: per connection, the proxy remembers statement name -> SQL (from Parse) and portal ->
+statement (from Bind), and forgets them on Close. A group of messages up to a Sync is one step: it
+is parked at its first Execute (that is where the statement runs) with the SQL and request tag of
+the portal being executed; its done is the ReadyForQuery that answers the Sync. Further Executes in
+the same group pass through. Parse, Bind and Describe before the Execute are forwarded at once
+(they do not run the statement).
+Alternatives: park at Parse (a reused prepared statement has no Parse); park every Execute (a second
+parked Execute would wait for a ReadyForQuery that only comes after the Sync behind it: deadlock);
+keep extended unscheduled (no ORM support).
+Consequences: parameterised queries and ORMs can be explored like simple queries; the tag still
+comes from a leading SQL comment in the statement text.

@@ -16,3 +16,4 @@ export { queryString } from './query.ts';
 export { readyStatus, type ReadyStatus } from './ready.ts';
 export { commandTag, errorFields, firstColumn, type ErrorInfo } from './result.ts';
 export { backendKeyData, type BackendKey } from './keydata.ts';
+export { bindPortal, closeTarget, executePortal, parseStatement } from './extended.ts';
