@@ -453,7 +453,7 @@ Consequences: PCT gives a per-run probability bound (>= 1/(n * k^(d-1))) for bug
 model of the ledger race it hits 4.6% of runs vs random's 0.17%.
 
 ## D-033: Shrink every finding to fewer switches (greedy segment removal), on by default
-Status: Accepted      Date: 2026-11-13
+Status: Accepted      Date: 2026-11-12
 Context: Random and PCT findings can switch between requests many times; only a few switches
 matter for the bug, and the rest make the timeline hard to read.
 Decision: a finding's choices are read as segments (runs of one request). The shrinker repeatedly

@@ -165,7 +165,7 @@ numbers: the rows above stop after 1-4 runs, so their runs/sec mostly measures t
 - Exhaustive found every race in 3-4 runs: the first orders it tries run A's transaction first,
   which is serial and safe; the race appears as soon as B's first statements move before A's write.
 
-## Shrinker (Phase 3, 2026-11-13)
+## Shrinker (Phase 3, 2026-11-12)
 
 Every finding is shrunk before it is reported (D-033). Switches between requests in the finding,
 before → after, and in brackets the extra runs the shrinker made. Command `npm run test:acceptance`
