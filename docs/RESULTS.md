@@ -312,6 +312,13 @@ The two rows below are historical (Go implementation).
 | 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | approval fixed: complete exhaustive exploration (92 orders both ways), seconds / runs per s | 13.052 s / 7.049 | 2.694 s / 34.147 (4.8x faster) |
 | 2026-11-12 | d2bc1db | Lock waits detected by asking Postgres (`pg_blocking_pids`, polled every 10 ms) instead of a 200 ms timeout (D-030) | counter fixed: complete exhaustive exploration (24 orders both ways), seconds / runs per s | 3.819 s / 6.284 | 1.024 s / 23.437 (3.7x faster) |
 | 2026-11-12 | 5be0442 | Partial-order reduction (sleep sets over table-level read/write sets, `--por`, D-034) | runs for a complete exhaustive exploration of the fixed variants (9 victims) | coupon 36 · inventory 24 · seat 36 · wallet 92 · username 36 · transfer 50 · approval 92 · counter 24 · ledger 1026 | coupon 8 · inventory 6 · seat 7 · wallet 13 · username 7 · transfer 10 · approval 13 · counter 6 · ledger 14 |
+| 2026-11-12 | (spike, scripts/measure-reset.ts) | Template-database reset: CREATE DATABASE ... TEMPLATE per run instead of TRUNCATE + seed (D-035: not built) | median ms per reset, coupon seed, 20 rounds | TRUNCATE + seed 8.5 | clone 722.4 (WAL_LOG) / 1769.4 (FILE_COPY), +reconnect 49.3: 85-210x slower |
+
+2026-11-12 template-reset spike notes: command `node scripts/measure-reset.ts 20`; it creates and drops
+its own databases (interleave_tpl_probe, interleave_run_probe). TRUNCATE + seed: median
+8.5 ms (min 7.8, max 17.3). Clone WAL_LOG: median 722.4 ms (min 351.9,
+max 2337.1); FILE_COPY: median 1769.4 ms. A clone copies a whole database (catalogs included), a
+mostly fixed cost; TRUNCATE on a few rows is nearly free. Worth revisiting only for large seed data.
 
 2026-11-12 lock-wait detection notes:
 - Commands: `npm run test:acceptance` (default, `--lock-detect pg`) and

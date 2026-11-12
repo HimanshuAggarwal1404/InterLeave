@@ -486,3 +486,18 @@ row-level conflicts (would need the database's internals); on by default (a trig
 table would make the reduction unsound, and an exhaustive "clean" result would silently rely on it).
 Consequences: fewer runs for the same coverage when requests touch different tables; the order
 numbers before/after go into RESULTS.md; unsound only if statements touch tables not named in them.
+
+## D-035: No template-database reset: measured 85-210x slower than TRUNCATE + seed here
+Status: Accepted      Date: 2026-11-12
+Context: ROADMAP Phase 3 planned resetting by cloning a template database per run and measuring
+resets/s before and after. Building it needs the proxy to rewrite the database name at startup and
+the app's pooled connections to be dropped every run.
+Decision: measure first with a spike (scripts/measure-reset.ts, coupon seed, 20 rounds): TRUNCATE +
+seed 8.5 ms median; CREATE DATABASE ... TEMPLATE 722 ms (WAL_LOG) or 1769 ms (FILE_COPY), plus
+~49 ms to reconnect. Do not build it; keep TRUNCATE + seed (D-005). (Himanshu asked for the
+recommended step.)
+Alternatives: build it anyway behind a flag (a lot of proxy work for a slowdown); revisit for apps
+whose seed data is large, where TRUNCATE + INSERT grows with the rows but a clone's cost is mostly
+fixed.
+Consequences: Phase 3's reset item is closed with a measured negative result; the spike script
+stays so the numbers can be reproduced or rechecked on bigger seeds.

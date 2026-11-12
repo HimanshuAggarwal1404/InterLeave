@@ -34,6 +34,8 @@ numbers in `RESULTS.md`.
 - **Exit test:** SPEC.md section 8 acceptance criteria all pass.
 
 ## Phase 3: Make it smart (weeks 6-8)
+Done 2026-11-12: every item built or measured, before/after numbers in `RESULTS.md`, and the serial
+oracle finds all 8 victim races with the invariants removed.
 - Lock-wait detection via `pg_stat_activity` using backend PIDs; compare with timeout approach.
 - Serial-equivalence oracle (no user-written invariants needed). Done 2026-11-12: finds all 8
   victim races with the invariants removed (`npm run test:acceptance`).
@@ -43,7 +45,8 @@ numbers in `RESULTS.md`.
   2026-11-12 (`--por`, D-034): 4-7x fewer runs on the fixed victims, 73x on the ledger; RESULTS.md.
 - Shrinker (delta debugging) for failing schedules. Done 2026-11-12: every finding is shrunk to
   the fewest switches (2 for all victims) in 0-3 extra runs (13 for the ledger); RESULTS.md.
-- Template-database fast reset; measure resets/sec before and after.
+- Template-database fast reset; measure resets/sec before and after. Measured 2026-11-12 (spike):
+  cloning is 85-210x slower than TRUNCATE + seed for the victims' small tables; not built (D-035).
 - **Exit test:** RESULTS.md shows before/after numbers for each optimisation, and the serial
   oracle finds all 8 victim bugs with invariants removed.
 

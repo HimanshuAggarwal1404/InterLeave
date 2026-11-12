@@ -46,7 +46,8 @@ src/explore/      Strategies that produce choices: exhaustive DFS with replay,
                   access.ts classifies statements' table reads/writes, D-034).
 src/oracle/       Runs invariants; later the serial-equivalence check.
 src/harness/      Fires HTTP requests concurrently with X-Interleave-Req tags, collects responses.
-src/reset/        Executes reset SQL on the admin connection. Later: template-DB clones.
+src/reset/        Executes reset SQL on the admin connection (template-DB clones were measured
+                  85-210x slower for small seeds and not built, D-035).
 src/scenario/     Parses and validates scenario.yaml.
 src/report/       Terminal timeline, schedule.json writer/reader, later HTML report.
 src/runner/       Orchestrates one run and the loop of runs: reset → start requests →

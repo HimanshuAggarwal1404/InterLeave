@@ -4,10 +4,10 @@
 Interleave finds race conditions in web apps that use Postgres. It is a command-line testing tool
 (like a test runner), not a website. It is written in TypeScript and runs on Node.js.
 
-> **Status:** Phases 0-2 done: the MVP works. `interleave run` tries statement orders by itself,
+> **Status:** Phases 0-3 done. The MVP works: `interleave run` tries statement orders by itself,
 > finds the race in all 8 victim apps within 3-4 runs, reports none in any of their fixed versions
 > (every order checked), and every finding replays identically with `interleave replay` (numbers in
-> `docs/RESULTS.md`). Phase 3 (making the search smarter) has started: lock waits are now detected by asking Postgres, which made exploring the fixed apps 3.7-5.5x faster. This README explains, in plain
+> `docs/RESULTS.md`). Phase 3 (making the search smarter) is done too: lock waits detected by asking Postgres (3.7-5.5x faster), a serial-equivalence oracle that needs no hand-written rules, PCT, partial-order reduction (`--por`) and a shrinker; numbers in `docs/RESULTS.md`. This README explains, in plain
 > words, everything that exists so far and how to try each piece yourself. The full plan is in `docs/ROADMAP.md`; the detailed "why" is in
 > `docs/OVERVIEW.md`; every test command is in `docs/TESTING.md`.
 
@@ -687,9 +687,11 @@ docker-compose.yml        only for other people / the final demo; not used on th
 
 ---
 
-## What comes next (Phase 3)
+## What comes next (Phase 4)
 
-Phase 2 is done: Interleave finds all 8 races and clears all 8 fixes. Phase 3 (`docs/ROADMAP.md`)
-makes it smarter: knowing for sure when a statement waits for a lock (instead of a timeout),
-checking results against every one-at-a-time order (so no hand-written invariant is needed),
-smarter search (PCT, skipping orders that cannot differ), shrinking findings, and faster resets.
+Phase 3 is done: lock waits detected by asking Postgres, a serial-equivalence oracle, PCT,
+partial-order reduction and a shrinker, each measured in `docs/RESULTS.md` (a template-database
+reset was measured too, and was 85-210x slower for small seeds, so it was not built). Phase 4
+(`docs/ROADMAP.md`) takes Interleave to real apps: scheduling the extended query protocol (what
+ORMs and most drivers use), a victim written in another language and one built on an ORM, and a
+trial on an open-source app.
