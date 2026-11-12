@@ -360,7 +360,7 @@ Alternatives: add 2-3 now (more work before the MVP exit test).
 Consequences: Phase 2 stays scoped; the README/write-up gains the broken-fix story later.
 
 ## D-026: A scenario's reset path is relative to the scenario file
-Status: Proposed      Date: 2026-11-11
+Status: Accepted      Date: 2026-11-11 (accepted 2026-11-12)
 Context: SPEC section 4 showed `reset: victims/coupon/seed.sql`, a path relative to wherever
 `interleave run` is started. A scenario then breaks when run from another folder.
 Decision: `reset` is resolved relative to the scenario file's folder, so each victim writes
@@ -369,7 +369,7 @@ Alternatives: relative to the current directory (fragile); absolute paths (not p
 Consequences: scenarios can be run from anywhere; SPEC section 4 updated.
 
 ## D-027: The Phase 2 scheduler (RunScheduler) sits beside the Phase 1 scheduler
-Status: Proposed      Date: 2026-11-11
+Status: Accepted      Date: 2026-11-11 (accepted 2026-11-12)
 Context: Phase 2 needs request states, decision points, a quiet period, lock-wait detection and a
 chooser; the Phase 1 scheduler releases a fixed order and is what the kill test runs on.
 Decision: new class `RunScheduler` in `src/sched/run.ts`; `src/sched/sched.ts` stays unchanged
@@ -380,7 +380,7 @@ Consequences: two schedulers to read; the fixed order of v1 can later be express
 chooser on `RunScheduler` and v1 deleted.
 
 ## D-028: `RunScheduler.run()` resolves with an outcome instead of rejecting
-Status: Proposed      Date: 2026-11-11
+Status: Accepted      Date: 2026-11-11 (accepted 2026-11-12)
 Context: A run can end in three ways: every request finished, the run was aborted (run timeout,
 Ctrl+C), or the chooser failed (a replay found the app behaving differently).
 Decision: `run()` never rejects; it resolves with `{outcome: complete|aborted|error, reason?,
@@ -390,7 +390,7 @@ would need try/catch for expected outcomes).
 Consequences: the runner always gets the trace, so a timed-out run can still be reported.
 
 ## D-029: A request's first statement may delay a decision longer (start grace)
-Status: Proposed      Date: 2026-11-11
+Status: Accepted      Date: 2026-11-11 (accepted 2026-11-12)
 Context: With only the 50 ms quiet period, the first decision of the first run sometimes saw one
 request instead of two: the other request's app was still opening its database connection
 through the proxy. The explored order then depended on connection timing (seen in 1 of 5
