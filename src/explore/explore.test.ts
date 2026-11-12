@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Chooser, Decision } from '../sched/run.ts';
-import { Exhaustive, NonDeterminismError, RandomStrategy, replayChooser } from './index.ts';
+import { Exhaustive, NonDeterminismError, PctStrategy, RandomStrategy, replayChooser } from './index.ts';
 
 // simulate plays one run of a tiny model app without a database: each
 // request has a list of statements, every request with statements left is
@@ -100,4 +100,60 @@ test('ReplayRepeatsTheRecordedChoices', () => {
   assert.throws(() => simulate(replayChooser(['C']), { A: ['1'] }), NonDeterminismError);
   // More decisions than recorded: the app made more steps than when recorded.
   assert.throws(() => simulate(replayChooser(['A']), { A: ['1', '2'] }), NonDeterminismError);
+});
+
+// PCT (D-032). The model of the ledger race: A reads (r) and later writes
+// (w); B is a long job of 9 statements. The bug needs every statement of B
+// between A's read and A's write: one preemption, at exactly the right place
+// (a bug of depth 2), followed by a long uninterrupted run of B.
+const LEDGER = { A: ['r', 'w'], B: ['1', '2', '3', '4', '5', '6', '7', '8', '9'] };
+const ledgerBug = (order: string) => /Ar B1 B2 B3 B4 B5 B6 B7 B8 B9 Aw/.test(order);
+
+// hitRate runs a strategy many times on the model and returns how often the bug happened.
+function hitRate(strategy: { nextChooser(): Chooser; record?(d: readonly Decision[]): void }, runs: number): number {
+  let hits = 0;
+  for (let i = 0; i < runs; i++) {
+    const { order, decisions } = simulate(strategy.nextChooser(), LEDGER);
+    strategy.record?.(decisions);
+    if (ledgerBug(order)) {
+      hits++;
+    }
+  }
+  return hits / runs;
+}
+
+test('PctIsReproducibleBySeed', () => {
+  const orders = (seed: number) => {
+    const p = new PctStrategy(seed, 2);
+    return Array.from({ length: 30 }, () => {
+      const { order, decisions } = simulate(p.nextChooser(), LEDGER);
+      p.record(decisions);
+      return order;
+    });
+  };
+  assert.deepEqual(orders(7), orders(7));
+  assert.notDeepEqual(orders(7), orders(8));
+});
+
+test('PctDepth1NeverPreempts', () => {
+  // Depth 1 = no change point: every run lets the highest-priority request
+  // run to its end, then the next: only serial orders.
+  const p = new PctStrategy(3, 1);
+  for (let i = 0; i < 50; i++) {
+    const { order, decisions } = simulate(p.nextChooser(), LEDGER);
+    p.record(decisions);
+    assert.ok(['Ar Aw B1 B2 B3 B4 B5 B6 B7 B8 B9', 'B1 B2 B3 B4 B5 B6 B7 B8 B9 Ar Aw'].includes(order), order);
+  }
+});
+
+test('PctFindsADepth2BugAsOftenAsPromised', () => {
+  // PCT's guarantee: a bug of depth d is hit with probability at least
+  // 1/(n * k^(d-1)) per run; here n = 2 requests, k = 11 steps: 1/22 (4.5%).
+  // Here the bound is exact (A must get the higher priority, 1/2, and the
+  // change point must fall on A's write, 1/11), and a sample of runs scatters
+  // around it, so allow 20% below it. The seeds are fixed: not flaky.
+  const pct = hitRate(new PctStrategy(1, 2), 4000);
+  const random = hitRate(new RandomStrategy(1), 4000);
+  assert.ok(pct >= 0.8 / 22, `PCT hit the bug in ${(pct * 100).toFixed(1)}% of runs, far below the 1/22 bound`);
+  assert.ok(pct > 5 * random, `PCT ${(pct * 100).toFixed(1)}% vs random ${(random * 100).toFixed(2)}%: want PCT far ahead`);
 });

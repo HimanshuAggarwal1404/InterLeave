@@ -435,3 +435,19 @@ every table automatically (same, plus unrelated tables); HTTP bodies too (often 
 times); a CLI flag (the tables must be named somewhere anyway).
 Consequences: no hand-written rule needed to find a race; the user must pick columns that a
 correct app makes deterministic. Costs n! extra runs (2 for two requests) per exploration.
+
+## D-032: PCT as a third strategy, plus a harder benchmark victim
+Status: Accepted      Date: 2026-11-12
+Context: Exhaustive and random find every Phase 2 victim's race in 1-4 runs, so they cannot be
+compared. Random search hits bugs that need one request to run a long stretch uninterrupted with
+exponentially small probability; exhaustive DFS reaches orders far from its first path late.
+Decision: `--strategy pct --depth d` (default 2): PCT (Burckhardt et al., ASPLOS 2010) as a chooser:
+random initial priorities, d-1 random change points among the k steps of a run (k = the most
+decisions seen so far, a guess of 20 for the first run), highest priority runnable goes next; at the
+j-th change point the request about to run is demoted to priority j. Seeded like random. Plus a
+benchmark victim, ledger, whose race needs one preemption at one exact place followed by a long
+uninterrupted run of the other request, to compare the three strategies.
+Alternatives: keep only random/exhaustive (no measurable difference on the existing victims);
+make existing victims harder (would change Phase 2's numbers).
+Consequences: PCT gives a per-run probability bound (>= 1/(n * k^(d-1))) for bugs of depth d; on a
+model of the ledger race it hits 4.6% of runs vs random's 0.17%.
