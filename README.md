@@ -352,7 +352,10 @@ The **explorer** (`src/explore/`) decides what each run tries. `exhaustive` (the
 tree of all choices depth-first: run 1 always picks the first runnable request, and each next run
 replays the previous choices up to the deepest point with an untried alternative, then takes it.
 When no alternative is left, *every* order has been checked. `random` picks at random from a seed,
-so `--seed 7` always explores the same orders. The runner (`src/runner/`) loops until a violation
+so `--seed 7` always explores the same orders. `pct` (Phase 3) gives each request a random
+priority and preempts the running one at `--depth` - 1 random points: it is built for races that
+need one request stopped at exactly the right place while the other runs a long stretch (the
+`ledger` benchmark victim; `npm run compare` measures all three strategies on it). The runner (`src/runner/`) loops until a violation
 (or every distinct one, with `--all`), `--max-runs` (default 1000), or the tree is exhausted.
 
 A finding prints as a timeline, one column per request, each statement with what it did, and the

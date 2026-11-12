@@ -42,7 +42,7 @@ src/sched/        Parks steps, tracks request states, decides at decision points
                   run.ts: RunScheduler (asks a chooser at each decision point; used by the
                   runner). sched.ts: the Phase 1 fixed-order scheduler, kept for the kill test.
 src/explore/      Strategies that produce choices: exhaustive DFS with replay,
-                  random (seeded). Later: PCT, partial-order reduction.
+                  random (seeded), PCT (pct.ts, D-032). Later: partial-order reduction.
 src/oracle/       Runs invariants; later the serial-equivalence check.
 src/harness/      Fires HTTP requests concurrently with X-Interleave-Req tags, collects responses.
 src/reset/        Executes reset SQL on the admin connection. Later: template-DB clones.

@@ -165,6 +165,47 @@ numbers: the rows above stop after 1-4 runs, so their runs/sec mostly measures t
 - Exhaustive found every race in 3-4 runs: the first orders it tries run A's transaction first,
   which is serial and safe; the race appears as soon as B's first statements move before A's write.
 
+## Strategies compared: exhaustive vs random vs PCT (Phase 3, 2026-11-12)
+
+PCT (D-032), on the ledger benchmark victim, whose lost-fee race needs one preemption at exactly
+the right place and then the whole long close (11 statements). Tree at 71d3cdc; command
+`npm run compare` (10 seeds for random and PCT, --max-runs 2000, lock detection pg);
+raw numbers in `.interleave/strategies.json`.
+
+| Strategy | Runs to first violation | Seconds to first violation |
+|---|---|---|
+| exhaustive (DFS) | 286 | 10.19 |
+| random, seeds 1-10 | median 27.5 (range 4-139) | median 1.14 |
+| PCT depth 2, seeds 1-10 | median 12.5 (range 1-35) | median 0.75 |
+
+The fixed ledger stayed clean under all three (exhaustive 1000 orders, not complete: the fixed
+variant has thousands; random and PCT 300 runs each).
+
+On the 8 Phase 2 victims (same day, `npm run test:acceptance`, seed 1) PCT is *not* faster:
+
+| Victim | Exhaustive | Random (seed 1) | PCT (seed 1, depth 2) |
+|---|---|---|---|
+| coupon | 3 | 1 | 3 |
+| inventory | 3 | 1 | 3 |
+| seat | 4 | 4 | 7 |
+| wallet | 3 | 1 | 3 |
+| username | 3 | 2 | 7 |
+| transfer | 3 | 1 | 7 |
+| approval | 3 | 1 | 3 |
+| counter | 3 | 1 | 7 |
+
+Notes:
+- No strategy wins everywhere. Random's constant switching hits wide windows almost at once (the 8
+  victims); PCT runs one request uninterrupted until its single change point, so it needs that
+  point to land in the window, but then it reliably produces long uninterrupted stretches, which
+  random almost never does (the ledger: about 2x fewer runs at the median, 4x in the worst case).
+  Exhaustive is the only one that proves a fix clean, but reaches orders far from its first path
+  late (the ledger: 286 runs).
+- In a simulation of the same model (`src/explore/explore.test.ts`, 4000 runs, no database), PCT
+  hit the narrowest form of the bug in 4.58% of runs, matching its guarantee 1/(n·k) = 1/22, vs
+  random's 0.17%.
+- Medians over 10 seeds are a small sample; ranges are shown for that reason.
+
 ## Serial-equivalence oracle (Phase 3, 2026-11-12)
 
 Phase 3 exit test, part 1: every victim's race found by the serial oracle with **all invariants
